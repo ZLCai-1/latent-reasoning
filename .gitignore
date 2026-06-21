@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Data (too large for git)
+data/*.json
+data/teacher_states/
+
+# Model checkpoints (too large)
+checkpoints/
+models/
+
+# WandB logs
+wandb/
+
+# Environment
+.env
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp
+*.tmp
+*.swp

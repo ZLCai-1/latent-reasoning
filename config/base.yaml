@@ -1,0 +1,70 @@
+# =============================================================================
+# Latent Reasoning — Base Configuration
+# State-Transition Aligned Latent Reasoning Token Learning
+# =============================================================================
+
+model:
+  name: "gpt2"  # or "Qwen/Qwen2.5-0.5B", "meta-llama/Llama-3.2-1B"
+  num_latent_tokens: 3
+  layer_ids: [-1, -2]  # 对齐的层（负索引表示从最后层数）
+  special_tokens:
+    span_start: "<SPAN_START>"
+    span_end: "<SPAN_END>"
+
+data:
+  dataset: "gsm8k"
+  data_path: null  # 如果为 null，从 HuggingFace 加载
+  num_spans: 3
+  span_strategy: "fixed"  # fixed / semantic / random
+  max_seq_length: 512
+  max_samples: 0  # 0 or null means use all data
+  num_workers: 4
+
+training:
+  batch_size: 16
+  learning_rate: 5.0e-5
+  num_epochs: 10
+  gradient_accumulation_steps: 4
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  fp16: true
+  seed: 42
+
+loss:
+  transition_weight: 0.7
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 0.3
+  normalize_transition: false
+
+curriculum:
+  enabled: false
+  stages:
+    - {num_latent: 1, epochs: 5, transition_weight: 0.7}
+    - {num_latent: 2, epochs: 5, transition_weight: 0.6}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.5}
+
+evaluation:
+  eval_interval: 1  # per epoch
+  metrics: ["accuracy", "exact_match"]
+  max_new_tokens: 128
+
+logging:
+  use_wandb: true
+  project_name: "latent-reasoning"
+  run_name: null  # auto-generated if null
+  log_interval: 50
+
+checkpoint:
+  save_dir: "checkpoints"
+  save_interval: 1  # per epoch
+  keep_top_k: 3
+  resume_from: null
+
+teacher:
+  model_name: null  # 如果为 null，使用 model.name 作为 teacher
+  cache_dir: "teacher_states"
+  cache_format: "hdf5"  # hdf5 / pt
+  extract_batch_size: 8
+  store_fp16: true

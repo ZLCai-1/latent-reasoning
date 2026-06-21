@@ -1,0 +1,64 @@
+# =============================================================================
+# Stage 1: Transition Alignment Training
+# 用 latent tokens 对齐 teacher 的状态转移量 ΔH
+# =============================================================================
+
+defaults:
+  - ../base
+
+model:
+  name: "gpt2"
+  num_latent_tokens: 3
+  layer_ids: [-1, -2]  # 对齐最后两层
+
+data:
+  dataset: "gsm8k"
+  data_path: "data/gsm8k_train.json"
+  num_spans: 3
+  span_strategy: "fixed"
+  max_seq_length: 512
+
+training:
+  batch_size: 16
+  learning_rate: 5.0e-5
+  num_epochs: 10
+  gradient_accumulation_steps: 4
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  fp16: true
+
+loss:
+  transition_weight: 0.7
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 0.3
+  normalize_transition: false
+
+curriculum:
+  enabled: true
+  stages:
+    - {num_latent: 1, epochs: 5, transition_weight: 0.8, generation_weight: 0.2}
+    - {num_latent: 2, epochs: 5, transition_weight: 0.7, generation_weight: 0.3}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.5, generation_weight: 0.5}
+
+evaluation:
+  eval_interval: 1
+  metrics: ["accuracy", "exact_match"]
+
+logging:
+  use_wandb: true
+  project_name: "latent-reasoning"
+  run_name: "stage1-transition-align"
+  log_interval: 50
+
+checkpoint:
+  save_dir: "checkpoints/stage1_transition"
+  save_interval: 1
+  keep_top_k: 3
+
+teacher:
+  model_name: null  # 使用 Stage 0 训练好的 teacher
+  cache_dir: "data/teacher_states"
+  cache_format: "hdf5"
+  extract_batch_size: 8
+  store_fp16: true

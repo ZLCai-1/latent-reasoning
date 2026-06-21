@@ -1,0 +1,50 @@
+# =============================================================================
+# Stage 0: CoT Teacher Training
+# 用标准 CoT 数据微调 teacher 模型，使其具备推理能力
+# =============================================================================
+
+defaults:
+  - ../base
+
+model:
+  name: "gpt2"
+  num_latent_tokens: 0  # Stage 0 不使用 latent tokens
+
+data:
+  dataset: "gsm8k"
+  num_spans: 0  # 不划分 span，使用完整 CoT
+  span_strategy: "none"
+  max_seq_length: 512
+
+training:
+  batch_size: 8
+  learning_rate: 2.0e-5
+  num_epochs: 5
+  gradient_accumulation_steps: 4
+  warmup_ratio: 0.1
+  weight_decay: 0.01
+  fp16: true
+
+loss:
+  transition_weight: 0.0
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 1.0  # 仅使用 generation loss
+
+curriculum:
+  enabled: false
+
+evaluation:
+  eval_interval: 1
+  metrics: ["accuracy", "exact_match"]
+
+logging:
+  use_wandb: true
+  project_name: "latent-reasoning"
+  run_name: "stage0-cot-teacher"
+  log_interval: 50
+
+checkpoint:
+  save_dir: "checkpoints/stage0_cot"
+  save_interval: 1
+  keep_top_k: 3
