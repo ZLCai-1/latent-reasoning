@@ -45,12 +45,14 @@ class Trainer:
         val_dataloader: Optional[DataLoader] = None,
         config: Optional[Dict[str, Any]] = None,
         teacher_states: Optional[Dict[str, Any]] = None,
+        curriculum_scheduler=None,
     ) -> None:
         self.model = model
         self.transition_module = transition_module
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.teacher_states = teacher_states
+        self.curriculum_scheduler = curriculum_scheduler
 
         # Merge defaults with provided config
         self.cfg = self._default_config()
@@ -186,8 +188,22 @@ class Trainer:
         torch.manual_seed(self.cfg["seed"])
 
         for epoch in range(self.cfg["num_epochs"]):
-            train_loss = self._train_epoch(epoch)
-            logger.info("Epoch %d — train_loss=%.4f", epoch, train_loss)
+            # Update loss weights from curriculum if available
+            if self.curriculum_scheduler is not None:
+                stage = self.curriculum_scheduler.get_current_stage(epoch)
+                if stage is not None:
+                    self.cfg["transition_weight"] = stage.transition_weight
+                    self.cfg["generation_weight"] = stage.generation_weight
+                    self.cfg["anchor_weight"] = getattr(stage, 'anchor_weight', 0.0)
+                    self.cfg["bridge_weight"] = getattr(stage, 'bridge_weight', 0.0)
+
+            train_loss, loss_breakdown = self._train_epoch(epoch)
+            # Format loss breakdown for logging
+            parts = [f"train_loss={train_loss:.4f}"]
+            for k in ["transition", "anchor", "bridge", "generation"]:
+                if k in loss_breakdown and loss_breakdown[k] > 0:
+                    parts.append(f"{k}={loss_breakdown[k]:.4f}")
+            logger.info("Epoch %d \u2014 %s", epoch, ", ".join(parts))
 
             # Validation
             if (
@@ -207,13 +223,14 @@ class Trainer:
 
         logger.info("Training complete.")
 
-    def _train_epoch(self, epoch: int) -> float:
-        """Train for one epoch; returns mean loss."""
+    def _train_epoch(self, epoch: int) -> tuple:
+        """Train for one epoch; returns (mean_loss, loss_breakdown)."""
         self.model.train()
         if self.transition_module is not None:
             self.transition_module.train()
 
         total_loss = 0.0
+        total_breakdown = {}
         num_batches = 0
         self.optimizer.zero_grad()
 
@@ -224,11 +241,21 @@ class Trainer:
         )
 
         for step, batch in enumerate(pbar):
-            loss = self._training_step(batch, step)
+            loss, loss_info = self._training_step(batch, step)
             total_loss += loss
             num_batches += 1
 
-            pbar.set_postfix(loss=f"{loss:.4f}", lr=f"{self.scheduler.get_last_lr()[0]:.2e}")
+            # Accumulate loss breakdown
+            for k, v in loss_info.items():
+                total_breakdown[k] = total_breakdown.get(k, 0.0) + v
+
+            # Build postfix with individual loss components
+            postfix = {"loss": f"{loss:.4f}", "lr": f"{self.scheduler.get_last_lr()[0]:.2e}"}
+            if loss_info.get("anchor", 0) > 0:
+                postfix["anc"] = f"{loss_info['anchor']:.4f}"
+            if loss_info.get("bridge", 0) > 0:
+                postfix["brg"] = f"{loss_info['bridge']:.4f}"
+            pbar.set_postfix(**postfix)
 
             # Logging
             if self.global_step % self.cfg["log_interval"] == 0 and self.wandb_run is not None:
@@ -242,43 +269,73 @@ class Trainer:
                     }
                 )
 
-        return total_loss / max(num_batches, 1)
+        avg_loss = total_loss / max(num_batches, 1)
+        avg_breakdown = {k: v / max(num_batches, 1) for k, v in total_breakdown.items()}
+        return avg_loss, avg_breakdown
 
     def _training_step(self, batch: Dict[str, torch.Tensor], step: int) -> float:
-        """Execute a single training step with gradient accumulation."""
+        """Execute a single training step with gradient accumulation.
+
+        Supports two modes:
+        - **Student mode** (when batch contains ``latent_positions``):
+          Uses ``model.forward_with_latent`` to inject learned latent
+          embeddings, then aligns hidden states at latent positions
+          with pre-cached teacher transitions.
+        - **Teacher mode** (legacy, when batch contains
+          ``boundary_positions``): Full CoT forward with boundary
+          alignment.
+        """
         from ..models.loss_functions import (
             combined_loss,
             generation_loss,
             transition_loss as compute_transition_loss,
             anchor_loss as compute_anchor_loss,
+            bridge_loss as compute_bridge_loss,
         )
 
         input_ids = batch["input_ids"].to(self.device)
         attention_mask = batch["attention_mask"].to(self.device)
         labels = batch["labels"].to(self.device)
+
+        # Detect mode based on batch contents
+        latent_positions = batch.get("latent_positions")
         boundary_positions = batch.get("boundary_positions")
+        is_student_mode = latent_positions is not None
+
+        if latent_positions is not None:
+            latent_positions = latent_positions.to(self.device)
         if boundary_positions is not None:
             boundary_positions = boundary_positions.to(self.device)
 
         with autocast(enabled=self.cfg["fp16"]):
-            # Forward pass
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
+            if is_student_mode:
+                # --- Student forward pass ---
+                outputs = self.model.forward_with_latent(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    latent_positions=latent_positions,
+                    output_hidden_states=True,
+                )
+            else:
+                # --- Teacher/legacy forward pass ---
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    output_hidden_states=True,
+                )
 
-            # Generation loss
+            # Generation loss (answer portion)
             gen_l = generation_loss(outputs["logits"], labels)
 
-            # Transition alignment loss (if applicable)
+            # Transition alignment loss
             trans_l = torch.tensor(0.0, device=self.device)
             anchor_l = torch.tensor(0.0, device=self.device)
             bridge_l = torch.tensor(0.0, device=self.device)
+            student_boundary = None
+            teacher_boundary = None
 
             if (
                 self.transition_module is not None
-                and boundary_positions is not None
                 and self.teacher_states is not None
                 and outputs.get("hidden_states") is not None
             ):
@@ -291,13 +348,70 @@ class Trainer:
                 )
 
                 if teacher_trans is not None:
-                    result = self.transition_module(
-                        student_hidden_states=all_hidden,
-                        boundary_positions=boundary_positions,
-                        teacher_transitions=teacher_trans,
-                        normalize=self.cfg.get("normalize_transition", False),
+                    if is_student_mode:
+                        # In student mode, use latent_positions as
+                        # boundary positions for state extraction.
+                        # latent_positions [B, K] → the K positions
+                        # where hidden states should match teacher.
+                        result = self.transition_module(
+                            student_hidden_states=all_hidden,
+                            boundary_positions=latent_positions,
+                            teacher_transitions=teacher_trans,
+                            normalize=self.cfg.get("normalize_transition", False),
+                        )
+                    elif boundary_positions is not None:
+                        result = self.transition_module(
+                            student_hidden_states=all_hidden,
+                            boundary_positions=boundary_positions,
+                            teacher_transitions=teacher_trans,
+                            normalize=self.cfg.get("normalize_transition", False),
+                        )
+                    else:
+                        result = None
+
+                    if result is not None:
+                        trans_l = result["transition_loss"]
+                        student_boundary = result["student_boundary_states"]
+
+                # --- Anchor loss ---
+                if (
+                    self.cfg["anchor_weight"] > 0
+                    and student_boundary is not None
+                ):
+                    teacher_boundary = self._get_teacher_boundary_states_for_batch(
+                        input_ids.size(0)
                     )
-                    trans_l = result["transition_loss"]
+                    if teacher_boundary is not None:
+                        anchor_l = compute_anchor_loss(
+                            student_boundary, teacher_boundary
+                        )
+
+                # --- Bridge loss (3-term) ---
+                if (
+                    self.cfg["bridge_weight"] > 0
+                    and student_boundary is not None
+                    and is_student_mode
+                ):
+                    if teacher_boundary is None:
+                        teacher_boundary = (
+                            self._get_teacher_boundary_states_for_batch(
+                                input_ids.size(0)
+                            )
+                        )
+                    s_teacher_prefix = self._bridge_forward_teacher_prefix(
+                        batch
+                    )
+                    if (
+                        s_teacher_prefix is not None
+                        and teacher_boundary is not None
+                    ):
+                        bridge_l = compute_bridge_loss(
+                            student_states_teacher_prefix=s_teacher_prefix,
+                            student_states_self_prefix=student_boundary,
+                            teacher_states=teacher_boundary,
+                            rho=self.cfg.get("bridge_rho", 1.0),
+                            xi=self.cfg.get("bridge_xi", 0.5),
+                        )
 
             # Combined loss
             weights = {
@@ -312,7 +426,7 @@ class Trainer:
                 "bridge": bridge_l,
                 "generation": gen_l,
             }
-            loss, _loss_info = combined_loss(losses_dict, weights)
+            loss, loss_info = combined_loss(losses_dict, weights)
             loss = loss / self.cfg["gradient_accumulation_steps"]
 
         # Backward
@@ -321,16 +435,18 @@ class Trainer:
         # Optimizer step (with gradient accumulation)
         if (step + 1) % self.cfg["gradient_accumulation_steps"] == 0:
             self.scaler.unscale_(self.optimizer)
-            nn.utils.clip_grad_norm_(
-                self.model.parameters(), self.cfg["max_grad_norm"]
-            )
+            # Clip gradients for both model and latent embeddings
+            all_params = list(self.model.parameters())
+            if self.transition_module is not None:
+                all_params += list(self.transition_module.parameters())
+            nn.utils.clip_grad_norm_(all_params, self.cfg["max_grad_norm"])
             self.scaler.step(self.optimizer)
             self.scaler.update()
             self.scheduler.step()
             self.optimizer.zero_grad()
             self.global_step += 1
 
-        return loss.item() * self.cfg["gradient_accumulation_steps"]
+        return loss.item() * self.cfg["gradient_accumulation_steps"], loss_info
 
     def _get_teacher_transitions_for_batch(
         self,
@@ -339,33 +455,161 @@ class Trainer:
     ) -> Optional[torch.Tensor]:
         """Retrieve teacher transitions for the current batch.
 
+        Computes transitions from SPAN_END boundary states only so that
+        the number of transitions matches ``num_latent_tokens - 1``.
+
         Returns:
             Tensor ``[B, K-1, num_layers, D]`` or ``None``.
         """
         if self.teacher_states is None:
             return None
 
+        # Prefer computing transitions from boundary_states (SPAN_END only)
+        boundary_dict = self.teacher_states.get("boundary_states")
+        if boundary_dict and len(boundary_dict) > 0:
+            layer_tensors = list(boundary_dict.values())
+            if layer_tensors:
+                # Stack: [N, K_all, num_layers, D]
+                boundary = torch.stack(layer_tensors, dim=2)
+                # Take only SPAN_END positions (odd indices)
+                boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
+                # Compute transitions between consecutive SPAN_END states
+                from ..models.state_transition import StateTransitionModule
+                transitions = StateTransitionModule.compute_transitions(
+                    boundary_end
+                )  # [N, K-1, nL, D]
+
+                start = self.global_step * batch_size
+                end = start + batch_size
+                if start >= transitions.size(0):
+                    start = start % transitions.size(0)
+                    end = start + batch_size
+                actual_end = min(end, transitions.size(0))
+                return transitions[start:actual_end].to(self.device)
+
+        # Fallback: use raw cached transitions
         transitions_dict = self.teacher_states.get("transitions")
-        if transitions_dict is None:
+        if transitions_dict is None or len(transitions_dict) == 0:
             return None
 
-        # transitions_dict is {layer_id: tensor[N, K-1, D]}
-        # Stack all layers into [N, K-1, num_layers, D]
         layer_tensors = list(transitions_dict.values())
         if not layer_tensors:
             return None
 
-        # Each tensor is [N, K-1, D], stack to [N, K-1, num_layers, D]
         transitions = torch.stack(layer_tensors, dim=2)
 
         start = self.global_step * batch_size
         end = start + batch_size
 
         if start >= transitions.size(0):
-            return None
+            start = start % transitions.size(0)
+            end = start + batch_size
 
         actual_end = min(end, transitions.size(0))
         return transitions[start:actual_end].to(self.device)
+
+    def _get_teacher_boundary_states_for_batch(
+        self,
+        batch_size: int,
+    ) -> Optional[torch.Tensor]:
+        """Retrieve teacher boundary states (SPAN_END only) for the batch.
+
+        Returns:
+            Tensor ``[B, K, num_layers, D]`` or ``None``.
+            K = num_spans (only SPAN_END positions are retained).
+        """
+        if self.teacher_states is None:
+            return None
+
+        boundary_dict = self.teacher_states.get("boundary_states")
+        if boundary_dict is None or len(boundary_dict) == 0:
+            return None
+
+        # boundary_dict is {layer_id: tensor[N, K_all, D]}
+        # K_all = 2 * num_spans (SPAN_START and SPAN_END alternating)
+        layer_tensors = list(boundary_dict.values())
+        if not layer_tensors:
+            return None
+
+        # Stack to [N, K_all, num_layers, D]
+        boundary = torch.stack(layer_tensors, dim=2)
+
+        # Take only SPAN_END positions (odd indices: 1, 3, 5, ...)
+        boundary = boundary[:, 1::2, :, :]  # [N, K, num_layers, D]
+
+        start = self.global_step * batch_size
+        end = start + batch_size
+
+        if start >= boundary.size(0):
+            # Wrap around to avoid index-out-of-range
+            start = start % boundary.size(0)
+            end = start + batch_size
+
+        actual_end = min(end, boundary.size(0))
+        return boundary[start:actual_end].to(self.device)
+
+    def _bridge_forward_teacher_prefix(
+        self,
+        batch: Dict[str, torch.Tensor],
+    ) -> Optional[torch.Tensor]:
+        """S←T forward: inject student latent embeddings into teacher text.
+
+        Runs a forward pass using the teacher-format input_ids (full CoT)
+        but replaces embeddings at SPAN_END positions with the student's
+        learned latent embeddings.
+
+        Returns:
+            Tensor ``[B, K, num_layers, D]`` hidden states at injection
+            positions, or ``None`` if teacher format data is unavailable.
+        """
+        teacher_input_ids = batch.get("teacher_input_ids")
+        teacher_attention_mask = batch.get("teacher_attention_mask")
+        teacher_boundary_positions = batch.get("teacher_boundary_positions")
+
+        if teacher_input_ids is None or teacher_boundary_positions is None:
+            return None
+
+        teacher_input_ids = teacher_input_ids.to(self.device)
+        teacher_attention_mask = teacher_attention_mask.to(self.device)
+        teacher_boundary_positions = teacher_boundary_positions.to(self.device)
+
+        # Get base token embeddings for teacher input
+        inputs_embeds = self.model.model.get_input_embeddings()(teacher_input_ids)
+
+        # SPAN_END positions are at odd indices of boundary_positions
+        span_end_positions = teacher_boundary_positions[:, 1::2]  # [B, K]
+        B, K = span_end_positions.shape
+
+        # Inject student latent embeddings at SPAN_END positions
+        num_latent = min(K, self.model.num_latent_tokens)
+        for k in range(num_latent):
+            latent_emb = self.model.latent_embeddings(
+                torch.tensor(k, device=self.device)
+            )  # [D]
+            for b in range(B):
+                pos = span_end_positions[b, k].item()
+                if pos > 0:  # skip padding
+                    inputs_embeds[b, pos, :] = latent_emb
+
+        # Forward pass with modified embeddings
+        outputs = self.model(
+            input_ids=teacher_input_ids,
+            attention_mask=teacher_attention_mask,
+            output_hidden_states=True,
+            inputs_embeds=inputs_embeds,
+        )
+
+        hidden_states = outputs["hidden_states"]
+
+        # Extract hidden states at SPAN_END positions
+        from ..models.state_transition import StateTransitionModule
+
+        # Use only the first num_latent SPAN_END positions
+        extraction_positions = span_end_positions[:, :num_latent]
+        boundary_states = StateTransitionModule.extract_boundary_states(
+            hidden_states, extraction_positions, self.transition_module.layer_ids
+        )
+        return boundary_states  # [B, K, num_layers, D]
 
     # ------------------------------------------------------------------
     # Validation

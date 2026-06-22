@@ -1,0 +1,15 @@
+# =============================================================================
+# 消融实验：L2 距离（normalize_transition=false，与默认相同，作为对照）
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+loss:
+  normalize_transition: false
+
+logging:
+  run_name: "ablation-dist-l2"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/dist_l2"

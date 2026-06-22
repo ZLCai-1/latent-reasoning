@@ -1,0 +1,15 @@
+# =============================================================================
+# 消融实验：对齐最后 4 层
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+model:
+  layer_ids: [-1, -2, -3, -4]
+
+logging:
+  run_name: "ablation-layer-last4"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/layer_last4"

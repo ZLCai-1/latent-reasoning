@@ -1,0 +1,13 @@
+# =============================================================================
+# 基线：Explicit CoT（标准显式推理链）
+# 直接用 Stage 0 teacher 评估，不需要额外训练；保存路径用于评估输出归档
+# =============================================================================
+
+defaults:
+  - ../stage0_cot
+
+logging:
+  run_name: "baseline-explicit-cot"
+
+checkpoint:
+  save_dir: "checkpoints/baselines/explicit_cot"

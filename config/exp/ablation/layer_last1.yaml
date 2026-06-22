@@ -1,0 +1,15 @@
+# =============================================================================
+# 消融实验：仅对齐最后 1 层
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+model:
+  layer_ids: [-1]
+
+logging:
+  run_name: "ablation-layer-last1"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/layer_last1"

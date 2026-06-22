@@ -128,6 +128,9 @@ class LatentReasoningDataset(Dataset):
     Tokenizes question + CoT spans + answer with boundary markers
     and returns tensors ready for the model.
 
+    When *mode* is ``"student"``, CoT spans are replaced with latent
+    token placeholders (for Stage 1 student training).
+
     Args:
         data: List of data dictionaries (from :func:`load_gsm8k`).
         tokenizer: HuggingFace tokenizer (with special tokens added).
@@ -137,6 +140,9 @@ class LatentReasoningDataset(Dataset):
                        (``"fixed"`` / ``"random"`` / ``"none"``).
         teacher_states_dir: Optional path to HDF5 cache with teacher
                             hidden states.
+        mode: ``"teacher"`` (default, full CoT with boundaries) or
+              ``"student"`` (replace CoT with latent tokens).
+        num_latent_tokens: Number of latent tokens (for student mode).
     """
 
     def __init__(
@@ -147,6 +153,9 @@ class LatentReasoningDataset(Dataset):
         num_spans: int = 3,
         span_strategy: str = "fixed",
         teacher_states_dir: Optional[str] = None,
+        mode: str = "teacher",
+        num_latent_tokens: int = 3,
+        include_teacher_format: bool = False,
     ) -> None:
         super().__init__()
         self.data = data
@@ -155,18 +164,23 @@ class LatentReasoningDataset(Dataset):
         self.num_spans = num_spans
         self.span_strategy = span_strategy
         self.teacher_states_dir = teacher_states_dir
+        self.mode = mode
+        self.num_latent_tokens = num_latent_tokens
+        self.include_teacher_format = include_teacher_format
 
         # Lazy import to avoid circular dependency
-        from .preprocessing import prepare_training_sample
+        from .preprocessing import prepare_training_sample, prepare_student_sample
 
         self._prepare_fn = prepare_training_sample
+        self._prepare_student_fn = prepare_student_sample
 
         # Pre-tokenize if span_strategy is not "none"
         logger.info(
-            "Dataset created: %d samples, num_spans=%d, strategy=%s",
+            "Dataset created: %d samples, num_spans=%d, strategy=%s, mode=%s",
             len(data),
             num_spans,
             span_strategy,
+            mode,
         )
 
     def __len__(self) -> int:
@@ -175,15 +189,55 @@ class LatentReasoningDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         record = self.data[idx]
 
-        # Require pre-computed spans
-        if "spans" not in record:
+        # Require pre-computed spans (except for baseline modes with no spans)
+        if self.num_spans > 0 and self.span_strategy != "none" and "spans" not in record:
             raise ValueError(
                 f"Record at index {idx} is missing the 'spans' field. "
                 "Please run 'python scripts/preprocess_data.py' first to "
                 "generate pre-computed spans."
             )
-        spans = record["spans"]
+        spans = record.get("spans", record.get("steps", []))
 
+        if self.mode == "student":
+            # Student mode: replace CoT with latent token placeholders
+            sample = self._prepare_student_fn(
+                question=record["question"],
+                spans=spans,
+                answer=record["answer"],
+                tokenizer=self.tokenizer,
+                num_latent_tokens=self.num_latent_tokens,
+                max_seq_length=self.max_seq_length,
+            )
+            result: Dict[str, torch.Tensor] = {
+                "input_ids": sample["input_ids"],
+                "attention_mask": sample["attention_mask"],
+                "labels": sample["labels"],
+                "latent_positions": sample["latent_positions"],
+            }
+            if "answer_start" in sample:
+                result["answer_start"] = sample["answer_start"]
+
+            # Optionally include teacher-format data for bridge loss
+            if self.include_teacher_format:
+                teacher_sample = self._prepare_fn(
+                    question=record["question"],
+                    spans=spans,
+                    answer=record["answer"],
+                    tokenizer=self.tokenizer,
+                    num_spans=self.num_spans,
+                    span_strategy=self.span_strategy,
+                    max_seq_length=self.max_seq_length,
+                )
+                result["teacher_input_ids"] = teacher_sample["input_ids"]
+                result["teacher_attention_mask"] = teacher_sample["attention_mask"]
+                if "boundary_positions" in teacher_sample:
+                    result["teacher_boundary_positions"] = teacher_sample[
+                        "boundary_positions"
+                    ]
+
+            return result
+
+        # Teacher / default mode: full CoT with boundary markers
         sample = self._prepare_fn(
             question=record["question"],
             spans=spans,
@@ -212,7 +266,9 @@ def collate_fn(
 ) -> Dict[str, torch.Tensor]:
     """Custom collate function for variable-length sequences.
 
-    Pads sequences to the maximum length in the batch.
+    Pads sequences to the maximum length in the batch.  Handles both
+    teacher mode (with ``boundary_positions``) and student mode (with
+    ``latent_positions``).
 
     Args:
         batch: List of sample dictionaries from the dataset.
@@ -227,7 +283,10 @@ def collate_fn(
     attention_mask_list = []
     labels_list = []
     boundary_positions_list = []
+    latent_positions_list = []
     has_boundary = "boundary_positions" in batch[0]
+    has_latent = "latent_positions" in batch[0]
+    has_teacher = "teacher_input_ids" in batch[0]
 
     for sample in batch:
         seq_len = sample["input_ids"].size(0)
@@ -249,6 +308,9 @@ def collate_fn(
         if has_boundary:
             boundary_positions_list.append(sample["boundary_positions"])
 
+        if has_latent:
+            latent_positions_list.append(sample["latent_positions"])
+
     result: Dict[str, torch.Tensor] = {
         "input_ids": torch.stack(input_ids_list).long(),
         "attention_mask": torch.stack(attention_mask_list).long(),
@@ -266,5 +328,51 @@ def collate_fn(
             else:
                 padded_bp.append(bp)
         result["boundary_positions"] = torch.stack(padded_bp).long()
+
+    if has_latent and latent_positions_list:
+        # Pad latent_positions to same length (use 0 as pad value)
+        max_lp_len = max(lp.size(0) for lp in latent_positions_list)
+        padded_lp = []
+        for lp in latent_positions_list:
+            pad_len_lp = max_lp_len - lp.size(0)
+            if pad_len_lp > 0:
+                padded_lp.append(torch.cat([lp, torch.zeros(pad_len_lp, dtype=lp.dtype)]))
+            else:
+                padded_lp.append(lp)
+        result["latent_positions"] = torch.stack(padded_lp).long()
+
+    # Handle teacher format fields (for bridge loss)
+    if has_teacher:
+        teacher_input_ids_list = []
+        teacher_attention_mask_list = []
+        teacher_bp_list = []
+        has_teacher_bp = "teacher_boundary_positions" in batch[0]
+
+        max_teacher_len = max(s["teacher_input_ids"].size(0) for s in batch)
+        for sample in batch:
+            t_seq_len = sample["teacher_input_ids"].size(0)
+            t_pad_len = max_teacher_len - t_seq_len
+            teacher_input_ids_list.append(
+                torch.cat([sample["teacher_input_ids"], torch.full((t_pad_len,), pad_token_id)])
+            )
+            teacher_attention_mask_list.append(
+                torch.cat([sample["teacher_attention_mask"], torch.zeros(t_pad_len)])
+            )
+            if has_teacher_bp and "teacher_boundary_positions" in sample:
+                teacher_bp_list.append(sample["teacher_boundary_positions"])
+
+        result["teacher_input_ids"] = torch.stack(teacher_input_ids_list).long()
+        result["teacher_attention_mask"] = torch.stack(teacher_attention_mask_list).long()
+
+        if has_teacher_bp and teacher_bp_list:
+            max_tbp_len = max(bp.size(0) for bp in teacher_bp_list)
+            padded_tbp = []
+            for bp in teacher_bp_list:
+                pad_len_tbp = max_tbp_len - bp.size(0)
+                if pad_len_tbp > 0:
+                    padded_tbp.append(torch.cat([bp, torch.zeros(pad_len_tbp, dtype=bp.dtype)]))
+                else:
+                    padded_tbp.append(bp)
+            result["teacher_boundary_positions"] = torch.stack(padded_tbp).long()
 
     return result

@@ -1,0 +1,15 @@
+# =============================================================================
+# 消融实验：余弦距离（normalize_transition=true）
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+loss:
+  normalize_transition: true
+
+logging:
+  run_name: "ablation-dist-cosine"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/dist_cosine"

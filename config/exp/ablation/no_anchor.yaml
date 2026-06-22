@@ -1,0 +1,15 @@
+# =============================================================================
+# 消融实验：去掉 anchor loss
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+loss:
+  anchor_weight: 0.0
+
+logging:
+  run_name: "ablation-no-anchor"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/no_anchor"

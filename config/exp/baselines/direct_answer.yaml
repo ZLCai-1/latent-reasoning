@@ -1,0 +1,19 @@
+# =============================================================================
+# 基线：Direct Answer（不使用任何推理链）
+# =============================================================================
+
+defaults:
+  - ../stage0_cot
+
+data:
+  span_strategy: "none"
+  max_seq_length: 128  # 很短，强制直接回答
+
+training:
+  num_epochs: 5
+
+logging:
+  run_name: "baseline-direct-answer"
+
+checkpoint:
+  save_dir: "checkpoints/baselines/direct_answer"

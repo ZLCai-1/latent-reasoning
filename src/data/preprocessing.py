@@ -241,6 +241,97 @@ def _tokenize_and_label(
     return result
 
 
+def prepare_student_sample(
+    question: str,
+    spans: List[List[str]],
+    answer: str,
+    tokenizer: Any,
+    num_latent_tokens: int = 3,
+    max_seq_length: int = 512,
+) -> Dict[str, torch.Tensor]:
+    """Construct a Student training sample: replace CoT spans with latent tokens.
+
+    The format is::
+
+        Question: <question>\nAnswer: <LATENT> <LATENT> ... <LATENT> <answer>
+
+    All CoT span content is removed and replaced by *num_latent_tokens*
+    ``<LATENT>`` placeholder tokens.  The model's ``forward_with_latent``
+    method will inject learned embeddings at these positions.
+
+    Args:
+        question: Problem text.
+        spans: Pre-computed spans (used only to determine original CoT
+               existed; content is discarded).
+        answer: Final answer string.
+        tokenizer: Tokenizer with ``<LATENT>`` special token added.
+        num_latent_tokens: Number of latent tokens to insert (``K``).
+        max_seq_length: Maximum token length.
+
+    Returns:
+        Dictionary with:
+          - ``input_ids``: Token ids ``[L]``.
+          - ``attention_mask``: Mask ``[L]``.
+          - ``labels``: Labels ``[L]`` (question masked with -100,
+            latent positions masked with -100, only answer contributes).
+          - ``latent_positions``: ``[K]`` int tensor with the positions
+            of the latent tokens in the sequence.
+          - ``answer_start``: Scalar int tensor marking where the answer
+            begins (for generation loss).
+    """
+    # Build student text: Question + latent placeholders + Answer
+    latent_str = " ".join(["<LATENT>"] * num_latent_tokens)
+    full_text = f"Question: {question}\nAnswer: {latent_str} {answer}"
+
+    encoding = tokenizer(
+        full_text,
+        max_length=max_seq_length,
+        truncation=True,
+        padding=False,
+        return_tensors="pt",
+    )
+
+    input_ids = encoding["input_ids"].squeeze(0)  # [L]
+    attention_mask = encoding["attention_mask"].squeeze(0)  # [L]
+
+    # Labels: copy of input_ids (causal LM objective)
+    labels = input_ids.clone()
+
+    # Find latent token positions
+    latent_token_id = tokenizer.convert_tokens_to_ids("<LATENT>")
+    ids_list = input_ids.tolist()
+    latent_positions = [i for i, tid in enumerate(ids_list) if tid == latent_token_id]
+
+    # Mask question portion (everything before "Answer:") with -100
+    answer_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+    answer_start = _find_subseq(ids_list, answer_token_ids)
+    if answer_start is not None:
+        labels[:answer_start] = -100
+
+    # Mask latent positions in labels (latent tokens should not contribute
+    # to generation loss — they have no ground-truth next token)
+    for pos in latent_positions:
+        labels[pos] = -100
+
+    # Determine where the actual answer text starts (after latent tokens)
+    if latent_positions:
+        answer_text_start = latent_positions[-1] + 1
+    elif answer_start is not None:
+        answer_text_start = answer_start
+    else:
+        answer_text_start = 0
+
+    result: Dict[str, torch.Tensor] = {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+        "latent_positions": torch.tensor(latent_positions, dtype=torch.long),
+        "answer_start": torch.tensor(answer_text_start, dtype=torch.long),
+    }
+
+    return result
+
+
 def _find_subseq(seq: List[int], subseq: List[int]) -> Optional[int]:
     """Find the start index of *subseq* within *seq*."""
     n, m = len(seq), len(subseq)

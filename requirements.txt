@@ -9,3 +9,5 @@ wandb
 tqdm
 numpy
 scikit-learn
+sentencepiece
+modelscope

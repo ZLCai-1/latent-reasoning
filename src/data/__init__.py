@@ -1,5 +1,5 @@
 from .dataset import LatentReasoningDataset, load_gsm8k
-from .preprocessing import split_into_spans, insert_boundary_markers, prepare_training_sample
+from .preprocessing import split_into_spans, insert_boundary_markers, prepare_training_sample, prepare_student_sample
 from .state_extractor import TeacherStateExtractor
 
 __all__ = [
@@ -8,5 +8,6 @@ __all__ = [
     "split_into_spans",
     "insert_boundary_markers",
     "prepare_training_sample",
+    "prepare_student_sample",
     "TeacherStateExtractor",
 ]

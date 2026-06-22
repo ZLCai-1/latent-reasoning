@@ -33,13 +33,15 @@ loss:
   bridge_weight: 0.0
   generation_weight: 0.3
   normalize_transition: false
+  bridge_rho: 1.0
+  bridge_xi: 0.5
 
 curriculum:
   enabled: true
   stages:
-    - {num_latent: 1, epochs: 5, transition_weight: 0.8, generation_weight: 0.2}
-    - {num_latent: 2, epochs: 5, transition_weight: 0.7, generation_weight: 0.3}
-    - {num_latent: 3, epochs: 5, transition_weight: 0.5, generation_weight: 0.5}
+    - {num_latent: 1, epochs: 5, transition_weight: 0.8, generation_weight: 0.2, anchor_weight: 0.05, bridge_weight: 0.05}
+    - {num_latent: 2, epochs: 5, transition_weight: 0.7, generation_weight: 0.3, anchor_weight: 0.15, bridge_weight: 0.05}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.5, generation_weight: 0.3, anchor_weight: 0.2, bridge_weight: 0.1}
 
 evaluation:
   eval_interval: 1

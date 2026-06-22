@@ -37,6 +37,8 @@ loss:
   bridge_weight: 0.0
   generation_weight: 0.3
   normalize_transition: false
+  bridge_rho: 1.0
+  bridge_xi: 0.5
 
 curriculum:
   enabled: false

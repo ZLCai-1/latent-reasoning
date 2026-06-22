@@ -118,6 +118,7 @@ def main() -> None:
 
     # ---- Data ----
     data_cfg = cfg.get("data", {})
+    loss_cfg = cfg.get("loss", {})
     dataset_name = data_cfg.get("dataset", "gsm8k")
     logger.info("Dataset: %s", dataset_name)
 
@@ -133,12 +134,23 @@ def main() -> None:
         raw_data = raw_data[:max_samples]
         logger.info("Using max_samples=%d (truncated from %d)", max_samples, original_len)
 
+    curriculum_cfg = cfg.get("curriculum", {})
+
     dataset = LatentReasoningDataset(
         data=raw_data,
         tokenizer=model.tokenizer,
         max_seq_length=data_cfg.get("max_seq_length", 512),
         num_spans=data_cfg.get("num_spans", 3),
         span_strategy=data_cfg.get("span_strategy", "fixed"),
+        mode="student" if num_latent_tokens > 0 and loss_cfg.get("transition_weight", 0) > 0 else "teacher",
+        num_latent_tokens=num_latent_tokens,
+        include_teacher_format=(
+            loss_cfg.get("bridge_weight", 0) > 0
+            or any(
+                s.get("bridge_weight", 0) > 0
+                for s in curriculum_cfg.get("stages", [])
+            )
+        ),
     )
 
     # Train/Val split (90/10)
@@ -170,7 +182,6 @@ def main() -> None:
     # ---- Transition Module ----
     transition_module = None
     teacher_states = None
-    loss_cfg = cfg.get("loss", {})
 
     if loss_cfg.get("transition_weight", 0) > 0:
         layer_ids = list(model_cfg.get("layer_ids", [-1, -2]))
@@ -190,8 +201,9 @@ def main() -> None:
         if os.path.exists(cache_file):
             from src.data.state_extractor import TeacherStateExtractor
 
+            # Use original (possibly negative) layer_ids to match HDF5 keys
             teacher_states = TeacherStateExtractor.load_cached_states(
-                cache_file, resolved_ids, device=device
+                cache_file, layer_ids, device=device
             )
             logger.info("Loaded teacher states from %s", cache_file)
         else:
@@ -202,6 +214,7 @@ def main() -> None:
             )
 
     # ---- Curriculum ----
+    scheduler = None
     curriculum_cfg = cfg.get("curriculum", {})
     if curriculum_cfg.get("enabled", False):
         scheduler = CurriculumScheduler(
@@ -226,6 +239,8 @@ def main() -> None:
         "bridge_weight": loss_cfg.get("bridge_weight", 0.0),
         "generation_weight": loss_cfg.get("generation_weight", 0.3),
         "normalize_transition": loss_cfg.get("normalize_transition", False),
+        "bridge_rho": loss_cfg.get("bridge_rho", 1.0),
+        "bridge_xi": loss_cfg.get("bridge_xi", 0.5),
         # Logging
         "use_wandb": cfg.get("logging", {}).get("use_wandb", False),
         "project_name": cfg.get("logging", {}).get("project_name", "latent-reasoning"),
@@ -248,6 +263,7 @@ def main() -> None:
         val_dataloader=val_loader,
         config=trainer_config,
         teacher_states=teacher_states,
+        curriculum_scheduler=scheduler if curriculum_cfg.get("enabled", False) else None,
     )
 
     # Resume if requested (CLI flag takes priority over config)

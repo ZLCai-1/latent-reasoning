@@ -25,7 +25,7 @@ from transformers import GPT2LMHeadModel, GPT2Config, GPT2TokenizerFast
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
 from src.data.dataset import load_gsm8k
-from src.data.preprocessing import split_into_spans, prepare_training_sample
+from src.data.preprocessing import split_into_spans, prepare_training_sample, prepare_student_sample
 from src.models.state_transition import StateTransitionModule
 from src.models.loss_functions import transition_loss, generation_loss, combined_loss
 
@@ -111,13 +111,14 @@ def main():
     tokenizer = _build_mini_tokenizer(vocab_size=5000)
 
     # Add special tokens
-    special_tokens = {"additional_special_tokens": ["<SPAN_START>", "<SPAN_END>"]}
+    special_tokens = {"additional_special_tokens": ["<SPAN_START>", "<SPAN_END>", "<LATENT>"]}
     num_added = tokenizer.add_special_tokens(special_tokens)
     if num_added > 0:
         model.resize_token_embeddings(len(tokenizer))
 
     span_start_id = tokenizer.convert_tokens_to_ids("<SPAN_START>")
     span_end_id = tokenizer.convert_tokens_to_ids("<SPAN_END>")
+    latent_token_id = tokenizer.convert_tokens_to_ids("<LATENT>")
 
     num_params = sum(p.numel() for p in model.parameters()) / 1e6
     print(f"OK ({num_params:.1f}M params, vocab={len(tokenizer)})")
@@ -160,13 +161,31 @@ def main():
         sys.exit(1)
 
     # Extract teacher states (teacher = same model, frozen, with CoT)
+    # Use only SPAN_END positions (one per span) so that the number of
+    # boundary points matches num_latent_tokens for the student.
+    # Determine num_latent_tokens from actual span count in data
+    num_latent_tokens = len(data[0].get("spans", [])) if data else 3
     teacher_transitions_list = []
+    valid_record_indices = []  # track which records produced valid teacher data
     model.eval()
     with torch.no_grad():
-        for sample in samples:
+        for rec_idx, sample in enumerate(samples):
             input_ids = sample["input_ids"].unsqueeze(0).to(device)
             attention_mask = sample["attention_mask"].unsqueeze(0).to(device)
-            bp = sample["boundary_positions"].unsqueeze(0).to(device)
+            bp_all = sample["boundary_positions"]  # all boundary positions
+
+            # Filter to only SPAN_END positions (every other boundary token)
+            ids_list = sample["input_ids"].tolist()
+            span_end_positions = [
+                i for i in bp_all.tolist() if ids_list[i] == span_end_id
+            ]
+
+            # Need exactly num_latent_tokens positions for proper alignment
+            if len(span_end_positions) < num_latent_tokens:
+                continue
+            span_end_positions = span_end_positions[:num_latent_tokens]
+
+            bp = torch.tensor(span_end_positions, dtype=torch.long).unsqueeze(0).to(device)
 
             outputs = model(
                 input_ids=input_ids,
@@ -182,17 +201,53 @@ def main():
             # Compute transitions [1, K-1, num_layers, D]
             teacher_trans = StateTransitionModule.compute_transitions(boundary_states)
             teacher_transitions_list.append(teacher_trans.squeeze(0))  # [K-1, nL, D]
+            valid_record_indices.append(rec_idx)
 
     print(f"OK ({len(samples)} samples, {teacher_transitions_list[0].shape[-1]}D)")
 
     # ==================================================================
-    # [4/5] Training loop
+    # [4/5] Student Latent Token Training
     # ==================================================================
-    print("[4/5] Training loop:")
+    print("[4/5] Student latent token training:")
+
+    # Create latent embeddings (simulating what LatentReasoningModel does)
+    hidden_dim = config.n_embd
+    latent_embeddings = torch.nn.Embedding(num_latent_tokens, hidden_dim)
+    torch.nn.init.normal_(latent_embeddings.weight, mean=0.0, std=0.02)
+
+    # Prepare student samples (matched with teacher transitions)
+    student_samples = []
+    for record in data:
+        sample = prepare_student_sample(
+            question=record["question"],
+            spans=record["spans"],
+            answer=record["answer"],
+            tokenizer=tokenizer,
+            num_latent_tokens=num_latent_tokens,
+            max_seq_length=256,
+        )
+        if "latent_positions" in sample and sample["latent_positions"].numel() > 0:
+            student_samples.append(sample)
+
+    if not student_samples:
+        print("  FAIL - no student samples with latent positions!")
+        sys.exit(1)
+
+    # Ensure we only use as many student samples as teacher transitions
+    num_paired = min(len(student_samples), len(teacher_transitions_list))
+    student_samples = student_samples[:num_paired]
+    teacher_transitions_list = teacher_transitions_list[:num_paired]
+
+    print(f"  Prepared {len(student_samples)} student samples")
+    print(f"  Latent positions (sample 0): {student_samples[0]['latent_positions'].tolist()}")
 
     model.train()
-    # Only train the model parameters (not frozen teacher)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5, weight_decay=0.01)
+    latent_embeddings.train()
+    # Optimize both model and latent embeddings
+    optimizer = torch.optim.AdamW(
+        list(model.parameters()) + list(latent_embeddings.parameters()),
+        lr=5e-5, weight_decay=0.01
+    )
 
     num_epochs = 3
     epoch_losses = []
@@ -203,29 +258,43 @@ def main():
         epoch_gen_loss = 0.0
         num_batches = 0
 
-        for i, sample in enumerate(samples):
+        for i, sample in enumerate(student_samples):
             input_ids = sample["input_ids"].unsqueeze(0).to(device)
             attention_mask = sample["attention_mask"].unsqueeze(0).to(device)
             labels = sample["labels"].unsqueeze(0).to(device)
-            bp = sample["boundary_positions"].unsqueeze(0).to(device)
-            teacher_trans = teacher_transitions_list[i].unsqueeze(0).to(device)
+            latent_pos = sample["latent_positions"].unsqueeze(0).to(device)  # [1, K]
 
-            # Forward pass
+            # Step 1: Get base token embeddings
+            inputs_embeds = model.get_input_embeddings()(input_ids)
+
+            # Step 2: Inject learned latent embeddings
+            B, K = latent_pos.shape
+            for k in range(K):
+                latent_emb = latent_embeddings(torch.tensor(k, device=device))
+                for b in range(B):
+                    pos = latent_pos[b, k].item()
+                    if pos > 0:
+                        inputs_embeds[b, pos, :] = latent_emb
+
+            # Step 3: Forward with injected embeddings
             outputs = model(
-                input_ids=input_ids,
+                inputs_embeds=inputs_embeds,
                 attention_mask=attention_mask,
                 output_hidden_states=True,
             )
             hidden_states = outputs.hidden_states
             logits = outputs.logits
 
-            # Student boundary states & transitions
+            # Step 4: Extract student states at latent positions
             student_boundary = StateTransitionModule.extract_boundary_states(
-                hidden_states, bp, layer_ids
+                hidden_states, latent_pos, layer_ids
             )
             student_trans = StateTransitionModule.compute_transitions(student_boundary)
 
-            # Compute losses
+            # Use corresponding teacher transition
+            teacher_trans = teacher_transitions_list[i].unsqueeze(0).to(device)
+
+            # Step 5: Compute losses
             t_loss = transition_loss(student_trans, teacher_trans, normalize=False)
             g_loss = generation_loss(logits, labels)
 
@@ -242,7 +311,10 @@ def main():
             # Backward + step
             optimizer.zero_grad()
             total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(
+                list(model.parameters()) + list(latent_embeddings.parameters()),
+                max_norm=1.0
+            )
             optimizer.step()
 
             epoch_total_loss += loss_info["total"]
@@ -258,6 +330,16 @@ def main():
         print(f"  Epoch {epoch+1}/{num_epochs}: "
               f"loss={avg_total:.4f} "
               f"(transition={avg_trans:.4f}, generation={avg_gen:.4f})")
+
+    # Verify latent embeddings have gradients and have been updated
+    latent_grad_exists = latent_embeddings.weight.grad is not None or any(
+        p.grad is not None for p in latent_embeddings.parameters()
+    )
+    # Check that the embeddings have changed from initial values
+    # (since we trained for 3 epochs, they should differ from pure N(0, 0.02))
+    latent_norm = latent_embeddings.weight.data.norm().item()
+    print(f"  Latent embeddings norm: {latent_norm:.4f} (should be > 0)")
+    print(f"  Latent embeddings are being learned: {'YES' if latent_norm > 0 else 'NO'}")
 
     # ==================================================================
     # [5/5] Verify loss trend

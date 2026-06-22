@@ -1,0 +1,18 @@
+# =============================================================================
+# 消融实验：仅保留 transition + generation loss，去掉 anchor 和 bridge
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+loss:
+  transition_weight: 0.7
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 0.3
+
+logging:
+  run_name: "ablation-transition-only"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/transition_only"

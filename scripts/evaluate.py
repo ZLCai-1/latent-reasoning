@@ -79,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         default=5,
         help="Number of qualitative samples to display.",
     )
+    parser.add_argument(
+        "--cot_baseline_tokens",
+        type=int,
+        default=200,
+        help="Expected avg token count for explicit CoT baseline (for reduction ratio).",
+    )
     return parser.parse_args()
 
 
@@ -140,10 +146,28 @@ def main() -> None:
         dataloader=dataloader,
         metrics=list(metrics),
         max_new_tokens=args.max_new_tokens,
+        cot_baseline_tokens=args.cot_baseline_tokens,
     )
 
     results = evaluator.evaluate()
     logger.info("Evaluation results: %s", results)
+
+    # Print formatted evaluation summary
+    print("\n" + "=" * 60)
+    print("=== Evaluation Results ===")
+    print("=" * 60)
+    if "accuracy" in results:
+        print(f"Accuracy: {results['accuracy'] * 100:.1f}%")
+    if "exact_match" in results:
+        print(f"Exact Match: {results['exact_match'] * 100:.1f}%")
+    if "avg_tokens" in results:
+        cot_bl = int(results.get("cot_baseline_tokens", 200))
+        print(f"Avg Output Tokens: {results['avg_tokens']:.0f} (vs CoT baseline ~{cot_bl})")
+    if "token_reduction" in results:
+        print(f"Token Reduction: {results['token_reduction'] * 100:.1f}%")
+    if "avg_latency_ms" in results:
+        print(f"Avg Latency: {results['avg_latency_ms']:.0f}ms/sample")
+    print("=" * 60)
 
     # Show qualitative samples
     if args.show_samples > 0:

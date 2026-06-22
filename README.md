@@ -21,6 +21,8 @@ scripts/
 ├── train.py                   # 训练入口
 ├── extract_teacher_states.py  # 提取 Teacher 隐状态
 ├── evaluate.py                # 评估
+├── run_ablation.sh            # 一键跑消融实验
+├── run_baselines.py           # 对比基线
 ├── test_e2e.py                # 端到端验证
 └── test_loss.py               # Loss 单元测试
 
@@ -28,45 +30,100 @@ config/
 ├── base.yaml                  # 默认配置
 └── exp/
     ├── stage0_cot.yaml        # Stage 0: CoT Teacher 训练
-    └── stage1_transition.yaml # Stage 1: Transition Alignment
+    ├── stage1_transition.yaml # Stage 1: Transition Alignment
+    ├── ablation/              # 14 个消融实验配置
+    └── baselines/             # 3 个对比基线配置
 ```
 
 ## 快速开始
 
-### 环境安装
+### 环境安装（4x3090 服务器）
 
 ```bash
+git clone https://github.com/ZLCai-1/latent-reasoning.git
+cd latent-reasoning
 conda create -n latent_reasoning python=3.10 -y
 conda activate latent_reasoning
 pip install -r requirements.txt
 ```
 
-### 完整流程
+### 完整训练流程
 
 ```bash
-# 1. 下载数据
-HF_ENDPOINT=https://hf-mirror.com python scripts/download_gsm8k.py --output data/gsm8k_raw.json --split train
+# 1. 下载 GSM8K 数据
+python scripts/download_gsm8k.py --output data/gsm8k_train.json --split train
+python scripts/download_gsm8k.py --output data/gsm8k_test.json --split test
 
-# 2. 数据预处理
+# 2. 数据预处理（生成 spans）
 python scripts/preprocess_data.py --input data/gsm8k_raw.json --output data/gsm8k_train.json --num_spans 3 --strategy fixed
+python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm8k_test_processed.json --num_spans 3 --strategy fixed
 
-# 3. 训练 CoT Teacher (Stage 0)
-python scripts/train.py --config config/exp/stage0_cot.yaml model.name=gpt2 data.data_path=data/gsm8k_train.json logging.use_wandb=false
+# 3. 准备 Teacher 模型（二选一）
+#
+# 方案 A：直接用标准 GPT-2 训 Stage 0（推荐，简单可靠）
+python scripts/train.py --config config/exp/stage0_cot.yaml \
+    model.name=gpt2 \
+    data.data_path=data/gsm8k_train.json
+#
+# 方案 B：下载 CODI-GPT2（需要 modelscope）
+# python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/gpt2', cache_dir='models/')"
 
-# 4. 提取 Teacher 隐状态
-python scripts/extract_teacher_states.py --config config/exp/stage1_transition.yaml --teacher_path checkpoints/stage0_cot/final --output_dir data/teacher_states
+# 4. 提取 Teacher 隐状态（全量数据）
+python scripts/extract_teacher_states.py \
+    --config config/exp/stage1_transition.yaml \
+    --teacher_path models/codi-gpt2 \
+    --output_dir data/teacher_states
 
-# 5. Transition Alignment 训练 (Stage 1)
-python scripts/train.py --config config/exp/stage1_transition.yaml model.name=checkpoints/stage0_cot/final data.data_path=data/gsm8k_train.json logging.use_wandb=false
+# 5. Stage 1: Transition Alignment 训练（全量，15 epochs curriculum）
+python scripts/train.py --config config/exp/stage1_transition.yaml \
+    model.name=models/codi-gpt2 \
+    data.data_path=data/gsm8k_train.json
 
 # 6. 评估
-python scripts/evaluate.py --config config/exp/stage1_transition.yaml --checkpoint checkpoints/stage1_transition/final --split test
+python scripts/evaluate.py \
+    --config config/exp/stage1_transition.yaml \
+    --checkpoint checkpoints/stage1_transition/final \
+    --split test \
+    --data_path data/gsm8k_test_processed.json
 ```
 
-### 本地快速验证（不需要 GPU）
+### 超参搜索（4 卡并行）
 
 ```bash
-python scripts/test_e2e.py
+# 9 组实验：lr x transition_weight
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py --config config/exp/stage1_transition.yaml \
+    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    training.learning_rate=1e-4 loss.transition_weight=0.1 \
+    checkpoint.save_dir=checkpoints/search/lr1e4_tw01 &
+
+CUDA_VISIBLE_DEVICES=1 python scripts/train.py --config config/exp/stage1_transition.yaml \
+    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    training.learning_rate=1e-4 loss.transition_weight=0.5 \
+    checkpoint.save_dir=checkpoints/search/lr1e4_tw05 &
+
+CUDA_VISIBLE_DEVICES=2 python scripts/train.py --config config/exp/stage1_transition.yaml \
+    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    training.learning_rate=5e-5 loss.transition_weight=0.1 \
+    checkpoint.save_dir=checkpoints/search/lr5e5_tw01 &
+
+CUDA_VISIBLE_DEVICES=3 python scripts/train.py --config config/exp/stage1_transition.yaml \
+    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    training.learning_rate=5e-5 loss.transition_weight=0.5 \
+    checkpoint.save_dir=checkpoints/search/lr5e5_tw05 &
+
+wait
+```
+
+### 消融实验
+
+```bash
+bash scripts/run_ablation.sh
+```
+
+### 对比基线
+
+```bash
+python scripts/run_baselines.py --data_path data/gsm8k_train.json --model_name models/codi-gpt2
 ```
 
 ## 训练数据格式
@@ -80,9 +137,25 @@ python scripts/test_e2e.py
 }
 ```
 
+## 4 个核心 Loss
+
+| Loss | 作用 | 权重 |
+|------|------|------|
+| transition_loss | 对齐状态转移量 ΔH | 0.5-0.8 |
+| anchor_loss | 防止 hidden state 漂移 | 0.05-0.2 |
+| bridge_loss | 缓解 exposure mismatch（3项公式） | 0.05-0.1 |
+| generation_loss | 答案生成交叉熵 | 0.2-0.3 |
+
+## 硬件需求
+
+- 4× RTX 3090 24GB
+- CUDA 12.2+
+- Python 3.10+
+
 ## 技术栈
 
 - PyTorch 2.0+
 - HuggingFace Transformers
 - OmegaConf (配置管理)
 - WandB (实验追踪)
+- DeepSpeed (多卡训练)
