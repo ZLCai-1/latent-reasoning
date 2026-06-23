@@ -85,6 +85,12 @@ def parse_args() -> argparse.Namespace:
         default=200,
         help="Expected avg token count for explicit CoT baseline (for reduction ratio).",
     )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default=None,
+        help="Path to local data file (overrides config data.data_path).",
+    )
     return parser.parse_args()
 
 
@@ -117,9 +123,10 @@ def main() -> None:
         device=device,
     )
 
-    # Load data
+    # Load data (CLI --data_path overrides config)
+    data_path = args.data_path or data_cfg.get("data_path")
     raw_data = load_gsm8k(
-        data_path=data_cfg.get("data_path"),
+        data_path=data_path,
         split=args.split,
     )
 
