@@ -251,7 +251,6 @@ class LatentReasoningModel(nn.Module):
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.pad_token_id,
-            repetition_penalty=kwargs.pop("repetition_penalty", 1.2),
             **kwargs,
         )
 

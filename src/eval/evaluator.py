@@ -64,26 +64,66 @@ class Evaluator:
         all_num_generated_tokens: List[int] = []
         all_inference_times: List[float] = []
 
+        # Find "Answer:" token ids for prompt truncation
+        answer_prefix_ids = self.model.tokenizer.encode(
+            "Answer:", add_special_tokens=False
+        )
+
         for batch in tqdm(self.dataloader, desc="Evaluating", leave=False):
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"]
 
+            batch_size = input_ids.size(0)
+
+            # Truncate input to prompt only (up to and including "Answer:")
+            # so the model generates the answer from scratch
+            prompt_input_ids_list = []
+            prompt_mask_list = []
+            for i in range(batch_size):
+                ids = input_ids[i].tolist()
+                # Find "Answer:" position
+                cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
+                if cut_pos is not None:
+                    # Keep up to and including "Answer:" tokens
+                    end = cut_pos + len(answer_prefix_ids)
+                else:
+                    # Fallback: use first 1/3 as prompt
+                    end = len(ids) // 3
+                prompt_input_ids_list.append(input_ids[i, :end])
+                prompt_mask_list.append(attention_mask[i, :end])
+
+            # Pad prompts to same length for batched generation
+            max_prompt_len = max(p.size(0) for p in prompt_input_ids_list)
+            pad_id = self.model.tokenizer.pad_token_id or 0
+            padded_ids = []
+            padded_mask = []
+            for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
+                pad_len = max_prompt_len - p_ids.size(0)
+                # Right-pad prompts (GPT-2 absolute position encoding)
+                padded_ids.append(
+                    torch.cat([p_ids, torch.full((pad_len,), pad_id, device=self.device)])
+                )
+                padded_mask.append(
+                    torch.cat([p_mask, torch.zeros(pad_len, device=self.device)])
+                )
+            prompt_input_ids = torch.stack(padded_ids).long()
+            prompt_attention_mask = torch.stack(padded_mask).long()
+
             # Generate with timing
             t_start = time.time()
             generated_ids = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                input_ids=prompt_input_ids,
+                attention_mask=prompt_attention_mask,
                 max_new_tokens=self.max_new_tokens,
             )
             t_end = time.time()
             batch_time = t_end - t_start
-            batch_size = generated_ids.size(0)
             per_sample_time = batch_time / batch_size
 
             # Decode predictions (only the generated part)
             for i in range(batch_size):
-                prompt_len = input_ids.size(1)
+                prompt_len = prompt_input_ids.size(1)
                 gen_tokens = generated_ids[i, prompt_len:]
                 # Count non-padding generated tokens
                 num_gen_tokens = int((gen_tokens != self.model.tokenizer.pad_token_id).sum().item()) if self.model.tokenizer.pad_token_id is not None else len(gen_tokens)
@@ -137,6 +177,15 @@ class Evaluator:
         logger.info("Avg Latency: %.1fms/sample", avg_latency_ms)
 
         return results
+
+    @staticmethod
+    def _find_answer_prefix(ids: List[int], prefix_ids: List[int]) -> Optional[int]:
+        """Find the starting position of 'Answer:' token sequence in ids."""
+        prefix_len = len(prefix_ids)
+        for i in range(len(ids) - prefix_len + 1):
+            if ids[i:i + prefix_len] == prefix_ids:
+                return i
+        return None
 
     @torch.no_grad()
     def generate_samples(
