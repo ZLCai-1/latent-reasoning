@@ -82,7 +82,7 @@ def compute_accuracy(
     correct = 0
     for pred, ref in zip(predictions, references):
         pred_num = extract_numeric_answer(pred) if pred else None
-        ref_num = _clean_number(ref) if ref else None
+        ref_num = extract_numeric_answer(ref) if ref else None
         if pred_num is not None and ref_num is not None and pred_num == ref_num:
             correct += 1
 

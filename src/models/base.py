@@ -61,6 +61,8 @@ class LatentReasoningModel(nn.Module):
         # Ensure pad token exists
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        # Decoder-only models require left-padding for correct generation
+        self.tokenizer.padding_side = "left"
 
         logger.info("Loading model from %s", model_name)
         self.model: AutoModelForCausalLM = AutoModelForCausalLM.from_pretrained(
