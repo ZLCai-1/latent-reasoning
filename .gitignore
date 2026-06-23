@@ -7,10 +7,14 @@ __pycache__/
 # Data (too large for git)
 data/*.json
 data/teacher_states/
+!data/mini_gsm8k.json
 
 # Model checkpoints (too large)
 checkpoints/
 models/
+
+# Results (generated)
+results/
 
 # WandB logs
 wandb/
