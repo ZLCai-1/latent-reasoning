@@ -182,6 +182,7 @@ def main() -> None:
     print("=" * 60)
 
     # Show qualitative samples
+    samples = []
     if args.show_samples > 0:
         samples = evaluator.generate_samples(num_samples=args.show_samples)
         print("\n" + "=" * 60)
@@ -196,8 +197,12 @@ def main() -> None:
     # Save results
     if args.output:
         os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        output_data = {
+            "metrics": results,
+            "samples": samples,
+        }
         with open(args.output, "w") as f:
-            json.dump(results, f, indent=2)
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
         logger.info("Results saved to %s", args.output)
 
 
