@@ -49,14 +49,20 @@ pip install -r requirements.txt
 
 ### 完整训练流程
 
+> 服务器访问 HuggingFace 受限时，所有下载命令需加前缀 `HF_ENDPOINT=https://hf-mirror.com`。
+> 也可在 shell 中一次性设置：`export HF_ENDPOINT=https://hf-mirror.com`
+
 ```bash
+# (可选) 全局设置 HuggingFace 镜像
+export HF_ENDPOINT=https://hf-mirror.com
+
 # 1. 下载 GSM8K 数据
 python scripts/download_gsm8k.py --output data/gsm8k_train.json --split train
 python scripts/download_gsm8k.py --output data/gsm8k_test.json --split test
 
-# 2. 数据预处理（生成 spans）
-python scripts/preprocess_data.py --input data/gsm8k_raw.json --output data/gsm8k_train.json --num_spans 3 --strategy fixed
-python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm8k_test_processed.json --num_spans 3 --strategy fixed
+# 2. 数据预处理（就地生成 spans 字段）
+python scripts/preprocess_data.py --input data/gsm8k_train.json --output data/gsm8k_train.json --num_spans 3 --strategy fixed
+python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm8k_test.json --num_spans 3 --strategy fixed
 
 # 3. 准备 Teacher 模型（二选一）
 #
@@ -84,7 +90,7 @@ python scripts/evaluate.py \
     --config config/exp/stage1_transition.yaml \
     --checkpoint checkpoints/stage1_transition/final \
     --split test \
-    --data_path data/gsm8k_test_processed.json
+    --data_path data/gsm8k_test.json
 ```
 
 ### 超参搜索（4 卡并行）
