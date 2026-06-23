@@ -9,9 +9,9 @@ data/*.json
 data/teacher_states/
 !data/mini_gsm8k.json
 
-# Model checkpoints (too large)
+# Model checkpoints (too large) - 仅顶层 models/，不影响 src/models/
 checkpoints/
-models/
+/models/
 
 # Results (generated)
 results/
