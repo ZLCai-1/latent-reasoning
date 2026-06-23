@@ -143,7 +143,7 @@ def main() -> None:
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id),
+        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side="left"),
     )
 
     # Evaluate

@@ -263,6 +263,7 @@ class LatentReasoningDataset(Dataset):
 def collate_fn(
     batch: List[Dict[str, torch.Tensor]],
     pad_token_id: int = 0,
+    padding_side: str = "right",
 ) -> Dict[str, torch.Tensor]:
     """Custom collate function for variable-length sequences.
 
@@ -273,6 +274,7 @@ def collate_fn(
     Args:
         batch: List of sample dictionaries from the dataset.
         pad_token_id: Token id used for padding.
+        padding_side: Padding side (``"left"`` for generation, ``"right"`` for training).
 
     Returns:
         Batched and padded tensors.
@@ -293,17 +295,26 @@ def collate_fn(
         pad_len = max_len - seq_len
 
         # Pad input_ids
-        input_ids_list.append(
-            torch.cat([sample["input_ids"], torch.full((pad_len,), pad_token_id)])
-        )
-        # Pad attention_mask
-        attention_mask_list.append(
-            torch.cat([sample["attention_mask"], torch.zeros(pad_len)])
-        )
-        # Pad labels with -100 (ignore index)
-        labels_list.append(
-            torch.cat([sample["labels"], torch.full((pad_len,), -100)])
-        )
+        if padding_side == "left":
+            input_ids_list.append(
+                torch.cat([torch.full((pad_len,), pad_token_id), sample["input_ids"]])
+            )
+            attention_mask_list.append(
+                torch.cat([torch.zeros(pad_len), sample["attention_mask"]])
+            )
+            labels_list.append(
+                torch.cat([torch.full((pad_len,), -100), sample["labels"]])
+            )
+        else:
+            input_ids_list.append(
+                torch.cat([sample["input_ids"], torch.full((pad_len,), pad_token_id)])
+            )
+            attention_mask_list.append(
+                torch.cat([sample["attention_mask"], torch.zeros(pad_len)])
+            )
+            labels_list.append(
+                torch.cat([sample["labels"], torch.full((pad_len,), -100)])
+            )
 
         if has_boundary:
             boundary_positions_list.append(sample["boundary_positions"])
