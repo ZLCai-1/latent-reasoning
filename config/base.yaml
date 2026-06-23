@@ -53,7 +53,7 @@ evaluation:
   max_new_tokens: 128
 
 logging:
-  use_wandb: true
+  use_wandb: false
   project_name: "latent-reasoning"
   run_name: null  # auto-generated if null
   log_interval: 50

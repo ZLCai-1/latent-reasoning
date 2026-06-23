@@ -67,12 +67,12 @@ python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm
 # 3. 准备 Teacher 模型（二选一）
 #
 # 方案 A：直接用标准 GPT-2 训 Stage 0（推荐，简单可靠）
+# 确定gpt2的路径
+ls models/gpt2/models--gpt2/snapshots/
+
 python scripts/train.py --config config/exp/stage0_cot.yaml \
-    model.name=gpt2 \
+    model.name=models/gpt2/models--gpt2/snapshots/（上一步得到的哈希值）  \
     data.data_path=data/gsm8k_train.json
-#
-# 方案 B：下载 CODI-GPT2（需要 modelscope）
-# python -c "from modelscope import snapshot_download; snapshot_download('AI-ModelScope/gpt2', cache_dir='models/')"
 
 # 4. 提取 Teacher 隐状态（全量数据）
 python scripts/extract_teacher_states.py \

@@ -39,7 +39,7 @@ evaluation:
   metrics: ["accuracy", "exact_match"]
 
 logging:
-  use_wandb: true
+  use_wandb: false
   project_name: "latent-reasoning"
   run_name: "stage0-cot-teacher"
   log_interval: 50

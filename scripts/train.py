@@ -92,6 +92,20 @@ def load_config(args: argparse.Namespace) -> OmegaConf:
 def main() -> None:
     args = parse_args()
     cfg = load_config(args)
+
+    # Auto-save logs to checkpoint directory
+    log_dir = cfg.get("checkpoint", {}).get("save_dir", "checkpoints")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "train.log")
+    file_handler = logging.FileHandler(log_file, mode="a")
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s [%(levelname)s] %(name)s \u2014 %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    ))
+    logging.getLogger().addHandler(file_handler)
+    logger.info("Logging to file: %s", log_file)
+
     logger.info("Config:\n%s", OmegaConf.to_yaml(cfg))
 
     # Set seed
