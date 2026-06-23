@@ -25,7 +25,12 @@ from torch.utils.data import DataLoader
 
 from src.data.dataset import LatentReasoningDataset, collate_fn, load_gsm8k
 from src.eval.evaluator import Evaluator
+import warnings
+
 from src.models.base import LatentReasoningModel
+
+# GPT-2 uses absolute positional embeddings; right-padding + attention_mask is correct
+warnings.filterwarnings("ignore", message=".*right-padding was detected.*")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -143,7 +148,7 @@ def main() -> None:
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side="left"),
+        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side="right"),
     )
 
     # Evaluate
