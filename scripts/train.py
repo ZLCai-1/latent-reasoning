@@ -136,6 +136,22 @@ def main() -> None:
         model.model.gradient_checkpointing_enable()
         logger.info("Gradient checkpointing enabled")
 
+    # Apply LoRA if configured (saves memory vs full fine-tuning)
+    if train_cfg_tmp.get("use_lora", False):
+        from peft import LoraConfig, get_peft_model
+        lora_cfg = cfg.get("lora", {})
+        lora_config = LoraConfig(
+            r=lora_cfg.get("r", 16),
+            lora_alpha=lora_cfg.get("alpha", 32),
+            target_modules=list(lora_cfg.get("target_modules", ["q_proj", "v_proj", "k_proj", "o_proj"])),
+            lora_dropout=lora_cfg.get("dropout", 0.05),
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        model.model = get_peft_model(model.model, lora_config)
+        model.model.print_trainable_parameters()
+        logger.info("LoRA enabled: r=%d, alpha=%d", lora_cfg.get("r", 16), lora_cfg.get("alpha", 32))
+
     # ---- Data ----
     data_cfg = cfg.get("data", {})
     loss_cfg = cfg.get("loss", {})
