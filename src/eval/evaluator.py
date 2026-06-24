@@ -204,25 +204,61 @@ class Evaluator:
         self.model.eval()
         samples: List[Dict[str, str]] = []
 
+        # Find "Answer:" token ids for prompt truncation
+        answer_prefix_ids = self.model.tokenizer.encode(
+            "Answer:", add_special_tokens=False
+        )
+
         for batch in self.dataloader:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"]
+            batch_size = input_ids.size(0)
+
+            # Truncate to prompt (up to and including "Answer:")
+            prompt_input_ids_list = []
+            prompt_mask_list = []
+            for i in range(batch_size):
+                ids = input_ids[i].tolist()
+                cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
+                if cut_pos is not None:
+                    end = cut_pos + len(answer_prefix_ids)
+                else:
+                    end = len(ids) // 3
+                prompt_input_ids_list.append(input_ids[i, :end])
+                prompt_mask_list.append(attention_mask[i, :end])
+
+            # Pad prompts for batched generation
+            max_prompt_len = max(p.size(0) for p in prompt_input_ids_list)
+            pad_id = self.model.tokenizer.pad_token_id or 0
+            padded_ids = []
+            padded_mask = []
+            for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
+                pad_len = max_prompt_len - p_ids.size(0)
+                padded_ids.append(
+                    torch.cat([p_ids, torch.full((pad_len,), pad_id, device=self.device)])
+                )
+                padded_mask.append(
+                    torch.cat([p_mask, torch.zeros(pad_len, device=self.device)])
+                )
+            prompt_input_ids = torch.stack(padded_ids).long()
+            prompt_attention_mask = torch.stack(padded_mask).long()
 
             generated_ids = self.model.generate(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                input_ids=prompt_input_ids,
+                attention_mask=prompt_attention_mask,
                 max_new_tokens=self.max_new_tokens,
             )
 
-            for i in range(generated_ids.size(0)):
+            for i in range(batch_size):
                 if len(samples) >= num_samples:
                     return samples
 
+                # Decode prompt as input text
                 input_text = self.model.tokenizer.decode(
-                    input_ids[i], skip_special_tokens=True
+                    prompt_input_ids_list[i], skip_special_tokens=True
                 )
-                prompt_len = input_ids.size(1)
+                prompt_len = prompt_input_ids.size(1)
                 gen_tokens = generated_ids[i, prompt_len:]
                 pred_text = self.model.tokenizer.decode(
                     gen_tokens, skip_special_tokens=True
