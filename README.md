@@ -71,7 +71,7 @@ python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm
 ls models/gpt2/models--gpt2/snapshots/
 
 python scripts/train.py --config config/exp/stage0_cot.yaml \
-    model.name=models/gpt2/models--gpt2/snapshots/（上一步得到的哈希值）  \
+    model.name=models/gpt2/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e  \
     data.data_path=data/gsm8k_train.json
 
 # 4. 提取 Teacher 隐状态（全量数据）
