@@ -212,7 +212,7 @@ class LatentReasoningModel(nn.Module):
             Same dictionary as :meth:`forward`.
         """
         # Step 1: Get token embeddings from the model's embedding layer
-        inputs_embeds = self.model.get_input_embeddings()(input_ids)
+        inputs_embeds = self.model.get_input_embeddings()(input_ids).clone()
 
         # Step 2: Inject learned latent embeddings at specified positions
         if latent_positions is not None:
@@ -254,7 +254,7 @@ class LatentReasoningModel(nn.Module):
         """
         if latent_positions is not None and self.num_latent_tokens > 0:
             # Inject learned latent embeddings at specified positions
-            inputs_embeds = self.model.get_input_embeddings()(input_ids)
+            inputs_embeds = self.model.get_input_embeddings()(input_ids).clone()
             B, K = latent_positions.shape
             for k in range(min(K, self.num_latent_tokens)):
                 latent_emb = self.latent_embeddings(
