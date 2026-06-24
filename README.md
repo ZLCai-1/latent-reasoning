@@ -64,28 +64,38 @@ python scripts/download_gsm8k.py --output data/gsm8k_test.json --split test
 python scripts/preprocess_data.py --input data/gsm8k_train.json --output data/gsm8k_train.json --num_spans 3 --strategy fixed
 python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm8k_test.json --num_spans 3 --strategy fixed
 
-# 3. 准备 Teacher 模型（二选一）
+# 3. 准备 Teacher 模型
 #
-# 方案 A：直接用标准 GPT-2 训 Stage 0（推荐，简单可靠）
-# 确定gpt2的路径
-ls models/gpt2/models--gpt2/snapshots/
+# 方案 A：用 Qwen2.5-Math-1.5B-Instruct（推荐，开箱即用 ~75% GSM8K accuracy）
+# 下载模型（约 3GB）
+HF_ENDPOINT=https://hf-mirror.com python -c "
+from huggingface_hub import snapshot_download
+snapshot_download(repo_id='Qwen/Qwen2.5-Math-1.5B-Instruct', local_dir='models/qwen2.5-math-1.5b', local_dir_use_symlinks=False)
+"
 
+# 方案 B：用标准 GPT-2 训 Stage 0（轻量验证，~3.6% accuracy）
 python scripts/train.py --config config/exp/stage0_cot.yaml \
-    model.name=models/gpt2/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e  \
     data.data_path=data/gsm8k_train.json
 
-# 4. 提取 Teacher 隐状态（全量数据）
+# 4. 评估 Teacher 模型
+python scripts/evaluate.py \
+    --config config/exp/stage0_cot.yaml \
+    --checkpoint models/qwen2.5-math-1.5b \
+    --data_path data/gsm8k_test.json \
+    --split test --max_samples 50 --show_samples 5
+
+# 5. 提取 Teacher 隐状态（全量数据）
 python scripts/extract_teacher_states.py \
     --config config/exp/stage1_transition.yaml \
-    --teacher_path models/codi-gpt2 \
+    --teacher_path models/qwen2.5-math-1.5b \
     --output_dir data/teacher_states
 
-# 5. Stage 1: Transition Alignment 训练（全量，15 epochs curriculum）
+# 6. Stage 1: Transition Alignment 训练（全量，15 epochs curriculum）
 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/codi-gpt2 \
+    model.name=models/qwen2.5-math-1.5b \
     data.data_path=data/gsm8k_train.json
 
-# 6. 评估
+# 7. 评估
 python scripts/evaluate.py \
     --config config/exp/stage1_transition.yaml \
     --checkpoint checkpoints/stage1_transition/final \
@@ -98,22 +108,22 @@ python scripts/evaluate.py \
 ```bash
 # 9 组实验：lr x transition_weight
 CUDA_VISIBLE_DEVICES=0 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
     training.learning_rate=1e-4 loss.transition_weight=0.1 \
     checkpoint.save_dir=checkpoints/search/lr1e4_tw01 &
 
 CUDA_VISIBLE_DEVICES=1 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
     training.learning_rate=1e-4 loss.transition_weight=0.5 \
     checkpoint.save_dir=checkpoints/search/lr1e4_tw05 &
 
 CUDA_VISIBLE_DEVICES=2 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
     training.learning_rate=5e-5 loss.transition_weight=0.1 \
     checkpoint.save_dir=checkpoints/search/lr5e5_tw01 &
 
 CUDA_VISIBLE_DEVICES=3 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/codi-gpt2 data.data_path=data/gsm8k_train.json \
+    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
     training.learning_rate=5e-5 loss.transition_weight=0.5 \
     checkpoint.save_dir=checkpoints/search/lr5e5_tw05 &
 
@@ -129,7 +139,7 @@ bash scripts/run_ablation.sh
 ### 对比基线
 
 ```bash
-python scripts/run_baselines.py --data_path data/gsm8k_train.json --model_name models/codi-gpt2
+python scripts/run_baselines.py --data_path data/gsm8k_train.json --model_name models/qwen2.5-math-1.5b
 ```
 
 ## 训练数据格式

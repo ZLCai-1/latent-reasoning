@@ -64,7 +64,13 @@ class Evaluator:
         all_num_generated_tokens: List[int] = []
         all_inference_times: List[float] = []
 
-        # Find "Answer:" token ids for prompt truncation
+        # Detect if model supports chat template (e.g. Qwen, Llama-Instruct)
+        use_chat_template = (
+            hasattr(self.model.tokenizer, 'chat_template')
+            and self.model.tokenizer.chat_template is not None
+        )
+
+        # Find "Answer:" token ids for prompt truncation (non-chat models)
         answer_prefix_ids = self.model.tokenizer.encode(
             "Answer:", add_special_tokens=False
         )
@@ -73,25 +79,44 @@ class Evaluator:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"]
+            questions = batch.get("question", [])  # raw question strings
 
             batch_size = input_ids.size(0)
 
-            # Truncate input to prompt only (up to and including "Answer:")
-            # so the model generates the answer from scratch
-            prompt_input_ids_list = []
-            prompt_mask_list = []
-            for i in range(batch_size):
-                ids = input_ids[i].tolist()
-                # Find "Answer:" position
-                cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
-                if cut_pos is not None:
-                    # Keep up to and including "Answer:" tokens
-                    end = cut_pos + len(answer_prefix_ids)
-                else:
-                    # Fallback: use first 1/3 as prompt
-                    end = len(ids) // 3
-                prompt_input_ids_list.append(input_ids[i, :end])
-                prompt_mask_list.append(attention_mask[i, :end])
+            if use_chat_template and questions:
+                # Chat-template models: build prompt from raw question
+                prompt_input_ids_list = []
+                prompt_mask_list = []
+                for i in range(batch_size):
+                    messages = [
+                        {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+                        {"role": "user", "content": questions[i]},
+                    ]
+                    prompt_text = self.model.tokenizer.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                    encoded = self.model.tokenizer(
+                        prompt_text, return_tensors="pt", add_special_tokens=False
+                    )
+                    prompt_input_ids_list.append(encoded["input_ids"].squeeze(0).to(self.device))
+                    prompt_mask_list.append(encoded["attention_mask"].squeeze(0).to(self.device))
+            else:
+                # Non-chat models: truncate to "Answer:" prefix
+                prompt_input_ids_list = []
+                prompt_mask_list = []
+                for i in range(batch_size):
+                    ids = input_ids[i].tolist()
+                    cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
+                    if cut_pos is not None:
+                        end = cut_pos + len(answer_prefix_ids)
+                    else:
+                        end = len(ids) // 3
+                    prompt_input_ids_list.append(input_ids[i, :end])
+                    prompt_mask_list.append(attention_mask[i, :end])
+
+            # Determine padding side based on model type
+            model_type = getattr(self.model.model.config, 'model_type', 'gpt2')
+            pad_side = "right" if model_type == "gpt2" else "left"
 
             # Pad prompts to same length for batched generation
             max_prompt_len = max(p.size(0) for p in prompt_input_ids_list)
@@ -100,13 +125,14 @@ class Evaluator:
             padded_mask = []
             for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
                 pad_len = max_prompt_len - p_ids.size(0)
-                # Right-pad prompts (GPT-2 absolute position encoding)
-                padded_ids.append(
-                    torch.cat([p_ids, torch.full((pad_len,), pad_id, device=self.device)])
-                )
-                padded_mask.append(
-                    torch.cat([p_mask, torch.zeros(pad_len, device=self.device)])
-                )
+                pad_tensor = torch.full((pad_len,), pad_id, device=self.device)
+                mask_pad = torch.zeros(pad_len, device=self.device)
+                if pad_side == "left":
+                    padded_ids.append(torch.cat([pad_tensor, p_ids]))
+                    padded_mask.append(torch.cat([mask_pad, p_mask]))
+                else:
+                    padded_ids.append(torch.cat([p_ids, pad_tensor]))
+                    padded_mask.append(torch.cat([p_mask, mask_pad]))
             prompt_input_ids = torch.stack(padded_ids).long()
             prompt_attention_mask = torch.stack(padded_mask).long()
 
@@ -122,6 +148,7 @@ class Evaluator:
             per_sample_time = batch_time / batch_size
 
             # Decode predictions (only the generated part)
+            answers = batch.get("answer", [])  # raw answer strings
             for i in range(batch_size):
                 prompt_len = prompt_input_ids.size(1)
                 gen_tokens = generated_ids[i, prompt_len:]
@@ -135,13 +162,17 @@ class Evaluator:
                 )
                 all_predictions.append(pred_text)
 
-                # Decode reference from labels
-                label_ids = labels[i]
-                valid_ids = label_ids[label_ids != -100]
-                ref_text = self.model.tokenizer.decode(
-                    valid_ids, skip_special_tokens=True
-                )
-                all_references.append(ref_text)
+                # Use raw answer field as reference (avoids tokenizer decode issues)
+                if answers:
+                    all_references.append(str(answers[i]))
+                else:
+                    # Fallback: decode from labels
+                    label_ids = labels[i]
+                    valid_ids = label_ids[label_ids != -100]
+                    ref_text = self.model.tokenizer.decode(
+                        valid_ids, skip_special_tokens=True
+                    )
+                    all_references.append(ref_text)
 
         # Compute metrics
         results: Dict[str, float] = {}
@@ -204,29 +235,56 @@ class Evaluator:
         self.model.eval()
         samples: List[Dict[str, str]] = []
 
-        # Find "Answer:" token ids for prompt truncation
+        # Detect chat template support
+        use_chat_template = (
+            hasattr(self.model.tokenizer, 'chat_template')
+            and self.model.tokenizer.chat_template is not None
+        )
+
+        # Find "Answer:" token ids for prompt truncation (non-chat models)
         answer_prefix_ids = self.model.tokenizer.encode(
             "Answer:", add_special_tokens=False
         )
+
+        # Determine padding side
+        model_type = getattr(self.model.model.config, 'model_type', 'gpt2')
+        pad_side = "right" if model_type == "gpt2" else "left"
 
         for batch in self.dataloader:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"]
+            questions = batch.get("question", [])
             batch_size = input_ids.size(0)
 
-            # Truncate to prompt (up to and including "Answer:")
-            prompt_input_ids_list = []
-            prompt_mask_list = []
-            for i in range(batch_size):
-                ids = input_ids[i].tolist()
-                cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
-                if cut_pos is not None:
-                    end = cut_pos + len(answer_prefix_ids)
-                else:
-                    end = len(ids) // 3
-                prompt_input_ids_list.append(input_ids[i, :end])
-                prompt_mask_list.append(attention_mask[i, :end])
+            if use_chat_template and questions:
+                prompt_input_ids_list = []
+                prompt_mask_list = []
+                for i in range(batch_size):
+                    messages = [
+                        {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+                        {"role": "user", "content": questions[i]},
+                    ]
+                    prompt_text = self.model.tokenizer.apply_chat_template(
+                        messages, tokenize=False, add_generation_prompt=True
+                    )
+                    encoded = self.model.tokenizer(
+                        prompt_text, return_tensors="pt", add_special_tokens=False
+                    )
+                    prompt_input_ids_list.append(encoded["input_ids"].squeeze(0).to(self.device))
+                    prompt_mask_list.append(encoded["attention_mask"].squeeze(0).to(self.device))
+            else:
+                prompt_input_ids_list = []
+                prompt_mask_list = []
+                for i in range(batch_size):
+                    ids = input_ids[i].tolist()
+                    cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
+                    if cut_pos is not None:
+                        end = cut_pos + len(answer_prefix_ids)
+                    else:
+                        end = len(ids) // 3
+                    prompt_input_ids_list.append(input_ids[i, :end])
+                    prompt_mask_list.append(attention_mask[i, :end])
 
             # Pad prompts for batched generation
             max_prompt_len = max(p.size(0) for p in prompt_input_ids_list)
@@ -235,12 +293,14 @@ class Evaluator:
             padded_mask = []
             for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
                 pad_len = max_prompt_len - p_ids.size(0)
-                padded_ids.append(
-                    torch.cat([p_ids, torch.full((pad_len,), pad_id, device=self.device)])
-                )
-                padded_mask.append(
-                    torch.cat([p_mask, torch.zeros(pad_len, device=self.device)])
-                )
+                pad_tensor = torch.full((pad_len,), pad_id, device=self.device)
+                mask_pad = torch.zeros(pad_len, device=self.device)
+                if pad_side == "left":
+                    padded_ids.append(torch.cat([pad_tensor, p_ids]))
+                    padded_mask.append(torch.cat([mask_pad, p_mask]))
+                else:
+                    padded_ids.append(torch.cat([p_ids, pad_tensor]))
+                    padded_mask.append(torch.cat([p_mask, mask_pad]))
             prompt_input_ids = torch.stack(padded_ids).long()
             prompt_attention_mask = torch.stack(padded_mask).long()
 
@@ -263,11 +323,17 @@ class Evaluator:
                 pred_text = self.model.tokenizer.decode(
                     gen_tokens, skip_special_tokens=True
                 )
-                label_ids = labels[i]
-                valid_ids = label_ids[label_ids != -100]
-                ref_text = self.model.tokenizer.decode(
-                    valid_ids, skip_special_tokens=True
-                )
+
+                # Use raw answer as reference if available
+                answers = batch.get("answer", [])
+                if answers:
+                    ref_text = str(answers[i])
+                else:
+                    label_ids = labels[i]
+                    valid_ids = label_ids[label_ids != -100]
+                    ref_text = self.model.tokenizer.decode(
+                        valid_ids, skip_special_tokens=True
+                    )
 
                 samples.append(
                     {

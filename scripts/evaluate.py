@@ -96,6 +96,12 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Path to local data file (overrides config data.data_path).",
     )
+    parser.add_argument(
+        "--max_samples",
+        type=int,
+        default=0,
+        help="Max number of samples to evaluate (0 = all).",
+    )
     return parser.parse_args()
 
 
@@ -135,6 +141,11 @@ def main() -> None:
         split=args.split,
     )
 
+    # Truncate data if --max_samples specified
+    if args.max_samples and args.max_samples > 0:
+        raw_data = raw_data[:args.max_samples]
+        logger.info("Evaluating first %d samples only", args.max_samples)
+
     dataset = LatentReasoningDataset(
         data=raw_data,
         tokenizer=model.tokenizer,
@@ -144,11 +155,14 @@ def main() -> None:
     )
 
     pad_token_id = model.tokenizer.pad_token_id or 0
+    # Auto-detect padding side: GPT-2 (absolute pos) needs right, others (RoPE) need left
+    model_type = getattr(model.model.config, 'model_type', 'gpt2')
+    eval_padding_side = "right" if model_type == "gpt2" else "left"
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
         shuffle=False,
-        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side="right"),
+        collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side=eval_padding_side),
     )
 
     # Evaluate

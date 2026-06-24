@@ -29,6 +29,11 @@ def extract_numeric_answer(text: str) -> Optional[str]:
     Returns:
         Extracted numeric string, or ``None`` if no number is found.
     """
+    # Try \boxed{number} format (Qwen, LaTeX-style models)
+    match = re.search(r"\\boxed\{([^}]+)\}", text)
+    if match:
+        return _clean_number(match.group(1))
+
     # Try GSM8K-style "#### <number>"
     match = re.search(r"####\s*([\-\d,\.]+)", text)
     if match:

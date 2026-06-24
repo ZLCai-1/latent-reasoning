@@ -257,6 +257,11 @@ class LatentReasoningDataset(Dataset):
         if "boundary_positions" in sample:
             result["boundary_positions"] = sample["boundary_positions"]
 
+        # Include raw question text for chat-template evaluation
+        result["question"] = record["question"]
+        # Include raw answer for reference extraction
+        result["answer"] = record["answer"]
+
         return result
 
 
@@ -385,5 +390,11 @@ def collate_fn(
                 else:
                     padded_tbp.append(bp)
             result["teacher_boundary_positions"] = torch.stack(padded_tbp).long()
+
+    # Collect non-tensor fields (e.g. raw question text, answer)
+    if "question" in batch[0]:
+        result["question"] = [s["question"] for s in batch]
+    if "answer" in batch[0]:
+        result["answer"] = [s["answer"] for s in batch]
 
     return result
