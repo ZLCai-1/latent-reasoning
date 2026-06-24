@@ -158,7 +158,7 @@ def prepare_training_sample(
         # Stage 0: plain CoT without boundaries
         cot_text = " ".join(" ".join(group) for group in spans)
         full_text = f"Question: {question}\nAnswer: {cot_text} {answer}"
-        return _tokenize_and_label(full_text, tokenizer, max_seq_length)
+        return _tokenize_and_label(full_text, tokenizer, max_seq_length, append_eos=True)
 
     # Build text with boundary markers
     parts = [f"Question: {question}\nAnswer:"]
@@ -181,6 +181,7 @@ def _tokenize_and_label(
     tokenizer: Any,
     max_seq_length: int,
     find_boundaries: bool = False,
+    append_eos: bool = False,
 ) -> Dict[str, torch.Tensor]:
     """Tokenize text and create causal-LM labels.
 
@@ -193,13 +194,15 @@ def _tokenize_and_label(
         max_seq_length: Maximum sequence length.
         find_boundaries: Whether to locate ``<SPAN_START>`` /
                          ``<SPAN_END>`` positions.
+        append_eos: Whether to append EOS token at the end so the
+                    model learns to stop generating.
 
     Returns:
         Dictionary with tensors.
     """
     encoding = tokenizer(
         text,
-        max_length=max_seq_length,
+        max_length=max_seq_length - (1 if append_eos else 0),
         truncation=True,
         padding=False,
         return_tensors="pt",
@@ -207,6 +210,12 @@ def _tokenize_and_label(
 
     input_ids = encoding["input_ids"].squeeze(0)  # [L]
     attention_mask = encoding["attention_mask"].squeeze(0)  # [L]
+
+    # Append EOS token if requested
+    if append_eos and tokenizer.eos_token_id is not None:
+        eos_id = torch.tensor([tokenizer.eos_token_id])
+        input_ids = torch.cat([input_ids, eos_id])
+        attention_mask = torch.cat([attention_mask, torch.ones(1)])
 
     # Labels: copy of input_ids (causal LM objective)
     labels = input_ids.clone()
