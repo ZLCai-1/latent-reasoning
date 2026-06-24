@@ -82,7 +82,11 @@ python scripts/evaluate.py \
     --config config/exp/stage0_cot.yaml \
     --checkpoint models/qwen2.5-math-1.5b \
     --data_path data/gsm8k_test.json \
-    --split test --max_samples 50 --show_samples 5
+    --split test \
+    --max_samples 10 \
+    --max_new_tokens 512 \
+    --show_samples 10 \
+    --output results/qwen2.5_math_1.5b_eval.json
 
 # 5. 提取 Teacher 隐状态（全量数据）
 python scripts/extract_teacher_states.py \

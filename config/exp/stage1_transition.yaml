@@ -7,7 +7,7 @@ defaults:
   - ../base
 
 model:
-  name: "gpt2"
+  name: "models/qwen2.5-math-1.5b"
   num_latent_tokens: 3
   layer_ids: [-1, -2]  # 对齐最后两层
 

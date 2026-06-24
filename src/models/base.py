@@ -242,10 +242,38 @@ class LatentReasoningModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
+        latent_positions: Optional[torch.Tensor] = None,
         max_new_tokens: int = 128,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Wrapper around ``model.generate()``."""
+        """Generate with latent embedding injection.
+
+        If *latent_positions* is provided (Stage 1 student mode),
+        injects learned latent embeddings before generation.
+        Otherwise falls back to standard generation.
+        """
+        if latent_positions is not None and self.num_latent_tokens > 0:
+            # Inject learned latent embeddings at specified positions
+            inputs_embeds = self.model.get_input_embeddings()(input_ids)
+            B, K = latent_positions.shape
+            for k in range(min(K, self.num_latent_tokens)):
+                latent_emb = self.latent_embeddings(
+                    torch.tensor(k, device=input_ids.device)
+                )
+                for b in range(B):
+                    pos = latent_positions[b, k].item()
+                    if pos > 0:  # skip padding
+                        inputs_embeds[b, pos, :] = latent_emb
+            return self.model.generate(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
+                **kwargs,
+            )
+
+        # Standard generation (Stage 0 / no latent tokens)
         return self.model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,

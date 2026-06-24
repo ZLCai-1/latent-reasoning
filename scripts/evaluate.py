@@ -146,12 +146,17 @@ def main() -> None:
         raw_data = raw_data[:args.max_samples]
         logger.info("Evaluating first %d samples only", args.max_samples)
 
+    # Determine mode based on num_latent_tokens
+    num_latent_tokens = model_cfg.get("num_latent_tokens", 0)
+
     dataset = LatentReasoningDataset(
         data=raw_data,
         tokenizer=model.tokenizer,
         max_seq_length=data_cfg.get("max_seq_length", 512),
         num_spans=data_cfg.get("num_spans", 3),
         span_strategy=data_cfg.get("span_strategy", "fixed"),
+        mode="student" if num_latent_tokens > 0 else "teacher",
+        num_latent_tokens=num_latent_tokens,
     )
 
     pad_token_id = model.tokenizer.pad_token_id or 0

@@ -213,6 +213,7 @@ class LatentReasoningDataset(Dataset):
                 "attention_mask": sample["attention_mask"],
                 "labels": sample["labels"],
                 "latent_positions": sample["latent_positions"],
+                "sample_idx": torch.tensor(idx, dtype=torch.long),
             }
             if "answer_start" in sample:
                 result["answer_start"] = sample["answer_start"]
@@ -356,6 +357,10 @@ def collate_fn(
             else:
                 padded_lp.append(lp)
         result["latent_positions"] = torch.stack(padded_lp).long()
+
+    # Collect sample_idx for teacher state alignment
+    if "sample_idx" in batch[0]:
+        result["sample_idx"] = torch.stack([s["sample_idx"] for s in batch]).long()
 
     # Handle teacher format fields (for bridge loss)
     if has_teacher:

@@ -102,6 +102,8 @@ class Evaluator:
                     prompt_mask_list.append(encoded["attention_mask"].squeeze(0).to(self.device))
             else:
                 # Non-chat models: truncate to "Answer:" prefix
+                # In student mode, also keep <LATENT> tokens after "Answer:"
+                latent_token_id = getattr(self.model, 'latent_token_id', None)
                 prompt_input_ids_list = []
                 prompt_mask_list = []
                 for i in range(batch_size):
@@ -109,6 +111,10 @@ class Evaluator:
                     cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
+                        # Keep <LATENT> tokens (student mode)
+                        if latent_token_id is not None:
+                            while end < len(ids) and ids[end] == latent_token_id:
+                                end += 1
                     else:
                         end = len(ids) // 3
                     prompt_input_ids_list.append(input_ids[i, :end])
@@ -138,9 +144,13 @@ class Evaluator:
 
             # Generate with timing
             t_start = time.time()
+            latent_pos = batch.get("latent_positions")
+            if latent_pos is not None:
+                latent_pos = latent_pos.to(self.device)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
+                latent_positions=latent_pos,
                 max_new_tokens=self.max_new_tokens,
             )
             t_end = time.time()

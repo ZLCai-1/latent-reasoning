@@ -342,8 +342,10 @@ class Trainer:
                 all_hidden = outputs["hidden_states"]  # tuple of tensors
 
                 # Get teacher transitions for this batch
+                sample_indices = batch.get("sample_idx")
+                batch_idx_list = sample_indices.tolist() if sample_indices is not None else None
                 teacher_trans = self._get_teacher_transitions_for_batch(
-                    batch_indices=None,
+                    batch_indices=batch_idx_list,
                     batch_size=input_ids.size(0),
                 )
 
@@ -455,8 +457,8 @@ class Trainer:
     ) -> Optional[torch.Tensor]:
         """Retrieve teacher transitions for the current batch.
 
-        Computes transitions from SPAN_END boundary states only so that
-        the number of transitions matches ``num_latent_tokens - 1``.
+        Uses sample_idx from batch for precise alignment when available,
+        otherwise falls back to sequential indexing.
 
         Returns:
             Tensor ``[B, K-1, num_layers, D]`` or ``None``.
@@ -479,6 +481,14 @@ class Trainer:
                     boundary_end
                 )  # [N, K-1, nL, D]
 
+                # Use sample_idx for precise alignment
+                if batch_indices is not None:
+                    indices = [i for i in batch_indices if i < transitions.size(0)]
+                    if indices:
+                        return transitions[indices].to(self.device)
+                    return None
+
+                # Fallback: sequential (legacy)
                 start = self.global_step * batch_size
                 end = start + batch_size
                 if start >= transitions.size(0):
@@ -498,13 +508,19 @@ class Trainer:
 
         transitions = torch.stack(layer_tensors, dim=2)
 
+        # Use sample_idx for precise alignment
+        if batch_indices is not None:
+            indices = [i for i in batch_indices if i < transitions.size(0)]
+            if indices:
+                return transitions[indices].to(self.device)
+            return None
+
+        # Fallback: sequential (legacy)
         start = self.global_step * batch_size
         end = start + batch_size
-
         if start >= transitions.size(0):
             start = start % transitions.size(0)
             end = start + batch_size
-
         actual_end = min(end, transitions.size(0))
         return transitions[start:actual_end].to(self.device)
 
