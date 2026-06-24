@@ -114,14 +114,15 @@ def bridge_loss(
     """
     teacher_states = teacher_states.detach()
 
-    # Align K dimension: curriculum may use fewer latent tokens than teacher spans
-    K_student = student_states_teacher_prefix.size(1)
-    K_teacher = teacher_states.size(1)
-    if K_student < K_teacher:
-        teacher_states = teacher_states[:, :K_student]
-    elif K_teacher < K_student:
-        student_states_teacher_prefix = student_states_teacher_prefix[:, :K_teacher]
-        student_states_self_prefix = student_states_self_prefix[:, :K_teacher]
+    # Align K dimension across all three tensors (curriculum may change num_latent)
+    K_min = min(
+        student_states_teacher_prefix.size(1),
+        student_states_self_prefix.size(1),
+        teacher_states.size(1),
+    )
+    student_states_teacher_prefix = student_states_teacher_prefix[:, :K_min]
+    student_states_self_prefix = student_states_self_prefix[:, :K_min]
+    teacher_states = teacher_states[:, :K_min]
 
     # Term 1: Student(teacher prefix) → Teacher
     term1 = F.mse_loss(student_states_teacher_prefix, teacher_states)
