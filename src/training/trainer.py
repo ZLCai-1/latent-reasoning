@@ -590,7 +590,7 @@ class Trainer:
         teacher_boundary_positions = teacher_boundary_positions.to(self.device)
 
         # Get base token embeddings for teacher input
-        inputs_embeds = self.model.model.get_input_embeddings()(teacher_input_ids)
+        inputs_embeds = self.model.model.get_input_embeddings()(teacher_input_ids).clone()
 
         # SPAN_END positions are at odd indices of boundary_positions
         span_end_positions = teacher_boundary_positions[:, 1::2]  # [B, K]
