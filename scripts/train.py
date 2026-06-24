@@ -130,6 +130,12 @@ def main() -> None:
         device=device,
     )
 
+    # Enable gradient checkpointing to save GPU memory
+    train_cfg_tmp = cfg.get("training", {})
+    if train_cfg_tmp.get("gradient_checkpointing", False):
+        model.model.gradient_checkpointing_enable()
+        logger.info("Gradient checkpointing enabled")
+
     # ---- Data ----
     data_cfg = cfg.get("data", {})
     loss_cfg = cfg.get("loss", {})
