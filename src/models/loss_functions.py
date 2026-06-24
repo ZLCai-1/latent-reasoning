@@ -41,6 +41,14 @@ def transition_loss(
     # Teacher is the target — no gradient.
     teacher_transitions = teacher_transitions.detach()
 
+    # Align K-1 dimension for curriculum learning
+    K_s = student_transitions.size(1)
+    K_t = teacher_transitions.size(1)
+    if K_s < K_t:
+        teacher_transitions = teacher_transitions[:, :K_s]
+    elif K_t < K_s:
+        student_transitions = student_transitions[:, :K_t]
+
     if normalize:
         # Clamp norms to avoid division-by-zero on zero vectors.
         s_norm = student_transitions.norm(dim=-1, keepdim=True).clamp(min=eps)
@@ -68,6 +76,13 @@ def anchor_loss(
     Returns:
         Scalar L2 loss.
     """
+    # Align K dimension for curriculum learning
+    K_s = student_states.size(1)
+    K_t = teacher_states.size(1)
+    if K_s < K_t:
+        teacher_states = teacher_states[:, :K_s]
+    elif K_t < K_s:
+        student_states = student_states[:, :K_t]
     return F.mse_loss(student_states, teacher_states.detach())
 
 
@@ -98,6 +113,15 @@ def bridge_loss(
         Scalar loss.
     """
     teacher_states = teacher_states.detach()
+
+    # Align K dimension: curriculum may use fewer latent tokens than teacher spans
+    K_student = student_states_teacher_prefix.size(1)
+    K_teacher = teacher_states.size(1)
+    if K_student < K_teacher:
+        teacher_states = teacher_states[:, :K_student]
+    elif K_teacher < K_student:
+        student_states_teacher_prefix = student_states_teacher_prefix[:, :K_teacher]
+        student_states_self_prefix = student_states_self_prefix[:, :K_teacher]
 
     # Term 1: Student(teacher prefix) → Teacher
     term1 = F.mse_loss(student_states_teacher_prefix, teacher_states)
