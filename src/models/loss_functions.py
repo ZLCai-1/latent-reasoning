@@ -17,6 +17,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def _std_normalize(x: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """Std normalization: (x - mean) / std along last dimension.
+    
+    Preserves relative structure within vectors while removing
+    scale differences across layers/samples (CODI-style).
+    """
+    mean = x.mean(dim=-1, keepdim=True)
+    std = x.std(dim=-1, keepdim=True).clamp(min=eps)
+    return (x - mean) / std
+
+
 def transition_loss(
     student_transitions: torch.Tensor,
     teacher_transitions: torch.Tensor,
@@ -26,13 +37,12 @@ def transition_loss(
     """Align student state transitions with teacher state transitions.
 
     Computes MSE between student ΔH and teacher ΔH.  Optionally
-    L2-normalizes both before comparison to focus on direction rather
-    than magnitude.
+    applies std-normalization (CODI-style) before comparison.
 
     Args:
         student_transitions: ``[B, K-1, ...]`` student ΔH vectors.
         teacher_transitions: ``[B, K-1, ...]`` teacher ΔH vectors.
-        normalize: If ``True``, normalize along the last dimension.
+        normalize: If ``True``, apply std normalization.
         eps: Small constant for numerical stability.
 
     Returns:
@@ -50,11 +60,8 @@ def transition_loss(
         student_transitions = student_transitions[:, :K_t]
 
     if normalize:
-        # Clamp norms to avoid division-by-zero on zero vectors.
-        s_norm = student_transitions.norm(dim=-1, keepdim=True).clamp(min=eps)
-        t_norm = teacher_transitions.norm(dim=-1, keepdim=True).clamp(min=eps)
-        student_transitions = student_transitions / s_norm
-        teacher_transitions = teacher_transitions / t_norm
+        student_transitions = _std_normalize(student_transitions, eps)
+        teacher_transitions = _std_normalize(teacher_transitions, eps)
 
     return F.mse_loss(student_transitions, teacher_transitions)
 
@@ -91,10 +98,8 @@ def anchor_loss(
     teacher_states = teacher_states.detach()
 
     if normalize:
-        s_norm = student_states.norm(dim=-1, keepdim=True).clamp(min=eps)
-        t_norm = teacher_states.norm(dim=-1, keepdim=True).clamp(min=eps)
-        student_states = student_states / s_norm
-        teacher_states = teacher_states / t_norm
+        student_states = _std_normalize(student_states, eps)
+        teacher_states = _std_normalize(teacher_states, eps)
 
     return F.mse_loss(student_states, teacher_states)
 
@@ -141,13 +146,11 @@ def bridge_loss(
     student_states_self_prefix = student_states_self_prefix[:, :K_min]
     teacher_states = teacher_states[:, :K_min]
 
-    # Normalize if requested
+    # Normalize if requested (std normalization, CODI-style)
     if normalize:
-        def _norm(x):
-            return x / x.norm(dim=-1, keepdim=True).clamp(min=eps)
-        student_states_teacher_prefix = _norm(student_states_teacher_prefix)
-        student_states_self_prefix = _norm(student_states_self_prefix)
-        teacher_states = _norm(teacher_states)
+        student_states_teacher_prefix = _std_normalize(student_states_teacher_prefix, eps)
+        student_states_self_prefix = _std_normalize(student_states_self_prefix, eps)
+        teacher_states = _std_normalize(teacher_states, eps)
 
     # Term 1: Student(teacher prefix) → Teacher
     term1 = F.mse_loss(student_states_teacher_prefix, teacher_states)
