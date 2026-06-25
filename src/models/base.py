@@ -217,6 +217,7 @@ class LatentReasoningModel(nn.Module):
         # Step 2: Inject learned latent embeddings at specified positions
         if latent_positions is not None:
             B, K = latent_positions.shape
+            seq_len = inputs_embeds.size(1)
             for k in range(K):
                 # Each latent position k gets the k-th learned embedding
                 latent_emb = self.latent_embeddings(
@@ -224,7 +225,7 @@ class LatentReasoningModel(nn.Module):
                 )  # [D]
                 for b in range(B):
                     pos = latent_positions[b, k].item()
-                    if pos > 0:  # 0 is padding
+                    if 0 < pos < seq_len:  # skip padding and out-of-bounds
                         inputs_embeds[b, pos, :] = latent_emb
 
         # Step 3: Forward with the modified embeddings
@@ -256,13 +257,14 @@ class LatentReasoningModel(nn.Module):
             # Inject learned latent embeddings at specified positions
             inputs_embeds = self.model.get_input_embeddings()(input_ids).clone()
             B, K = latent_positions.shape
+            seq_len = inputs_embeds.size(1)
             for k in range(min(K, self.num_latent_tokens)):
                 latent_emb = self.latent_embeddings(
                     torch.tensor(k, device=input_ids.device)
                 )
                 for b in range(B):
                     pos = latent_positions[b, k].item()
-                    if pos > 0:  # skip padding
+                    if 0 < pos < seq_len:  # skip padding and out-of-bounds
                         inputs_embeds[b, pos, :] = latent_emb
             return self.model.generate(
                 inputs_embeds=inputs_embeds,
