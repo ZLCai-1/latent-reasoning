@@ -381,7 +381,7 @@ class Trainer:
                     and student_boundary is not None
                 ):
                     teacher_boundary = self._get_teacher_boundary_states_for_batch(
-                        input_ids.size(0)
+                        input_ids.size(0), batch_indices=batch_idx_list
                     )
                     if teacher_boundary is not None:
                         anchor_l = compute_anchor_loss(
@@ -397,7 +397,7 @@ class Trainer:
                     if teacher_boundary is None:
                         teacher_boundary = (
                             self._get_teacher_boundary_states_for_batch(
-                                input_ids.size(0)
+                                input_ids.size(0), batch_indices=batch_idx_list
                             )
                         )
                     s_teacher_prefix = self._bridge_forward_teacher_prefix(
@@ -527,6 +527,7 @@ class Trainer:
     def _get_teacher_boundary_states_for_batch(
         self,
         batch_size: int,
+        batch_indices: Optional[List[int]] = None,
     ) -> Optional[torch.Tensor]:
         """Retrieve teacher boundary states (SPAN_END only) for the batch.
 
@@ -553,11 +554,18 @@ class Trainer:
         # Take only SPAN_END positions (odd indices: 1, 3, 5, ...)
         boundary = boundary[:, 1::2, :, :]  # [N, K, num_layers, D]
 
+        # Use sample_idx for precise alignment
+        if batch_indices is not None:
+            indices = [i for i in batch_indices if i < boundary.size(0)]
+            if indices:
+                return boundary[indices].to(self.device)
+            return None
+
+        # Fallback: sequential (legacy)
         start = self.global_step * batch_size
         end = start + batch_size
 
         if start >= boundary.size(0):
-            # Wrap around to avoid index-out-of-range
             start = start % boundary.size(0)
             end = start + batch_size
 

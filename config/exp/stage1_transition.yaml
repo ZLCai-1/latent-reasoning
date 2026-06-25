@@ -40,7 +40,7 @@ loss:
   anchor_weight: 0.0
   bridge_weight: 0.0
   generation_weight: 0.3
-  normalize_transition: false
+  normalize_transition: true
   bridge_rho: 1.0
   bridge_xi: 0.5
 
