@@ -62,6 +62,8 @@ def transition_loss(
 def anchor_loss(
     student_states: torch.Tensor,
     teacher_states: torch.Tensor,
+    normalize: bool = False,
+    eps: float = 1e-8,
 ) -> torch.Tensor:
     """Prevent hidden-state drift at boundary positions.
 
@@ -72,6 +74,8 @@ def anchor_loss(
     Args:
         student_states: ``[B, K, D]`` student boundary states.
         teacher_states: ``[B, K, D]`` teacher boundary states.
+        normalize: If ``True``, L2-normalize before comparison.
+        eps: Small constant for numerical stability.
 
     Returns:
         Scalar L2 loss.
@@ -83,7 +87,16 @@ def anchor_loss(
         teacher_states = teacher_states[:, :K_s]
     elif K_t < K_s:
         student_states = student_states[:, :K_t]
-    return F.mse_loss(student_states, teacher_states.detach())
+
+    teacher_states = teacher_states.detach()
+
+    if normalize:
+        s_norm = student_states.norm(dim=-1, keepdim=True).clamp(min=eps)
+        t_norm = teacher_states.norm(dim=-1, keepdim=True).clamp(min=eps)
+        student_states = student_states / s_norm
+        teacher_states = teacher_states / t_norm
+
+    return F.mse_loss(student_states, teacher_states)
 
 
 def bridge_loss(
@@ -92,6 +105,8 @@ def bridge_loss(
     teacher_states: torch.Tensor,
     rho: float = 1.0,
     xi: float = 0.5,
+    normalize: bool = False,
+    eps: float = 1e-8,
 ) -> torch.Tensor:
     """Complete bridge loss (3-term formula) for exposure mismatch.
 
@@ -108,6 +123,8 @@ def bridge_loss(
             (s_k^T).
         rho: Weight for term 2 (self-prefix → teacher).
         xi: Weight for term 3 (consistency constraint).
+        normalize: If ``True``, L2-normalize all states before comparison.
+        eps: Small constant for numerical stability.
 
     Returns:
         Scalar loss.
@@ -123,6 +140,14 @@ def bridge_loss(
     student_states_teacher_prefix = student_states_teacher_prefix[:, :K_min]
     student_states_self_prefix = student_states_self_prefix[:, :K_min]
     teacher_states = teacher_states[:, :K_min]
+
+    # Normalize if requested
+    if normalize:
+        def _norm(x):
+            return x / x.norm(dim=-1, keepdim=True).clamp(min=eps)
+        student_states_teacher_prefix = _norm(student_states_teacher_prefix)
+        student_states_self_prefix = _norm(student_states_self_prefix)
+        teacher_states = _norm(teacher_states)
 
     # Term 1: Student(teacher prefix) → Teacher
     term1 = F.mse_loss(student_states_teacher_prefix, teacher_states)

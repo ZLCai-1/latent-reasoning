@@ -385,7 +385,8 @@ class Trainer:
                     )
                     if teacher_boundary is not None:
                         anchor_l = compute_anchor_loss(
-                            student_boundary, teacher_boundary
+                            student_boundary, teacher_boundary,
+                            normalize=self.cfg.get("normalize_transition", False),
                         )
 
                 # --- Bridge loss (3-term) ---
@@ -413,6 +414,7 @@ class Trainer:
                             teacher_states=teacher_boundary,
                             rho=self.cfg.get("bridge_rho", 1.0),
                             xi=self.cfg.get("bridge_xi", 0.5),
+                            normalize=self.cfg.get("normalize_transition", False),
                         )
 
             # Combined loss
