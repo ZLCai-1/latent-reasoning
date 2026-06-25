@@ -127,12 +127,53 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Load model
-    logger.info("Loading model from %s", args.checkpoint)
-    model = LatentReasoningModel(
-        model_name=args.checkpoint,
-        layer_ids=list(model_cfg.get("layer_ids", [-1, -2])),
-        device=device,
-    )
+    # For LoRA checkpoints: load base model first, then apply LoRA adapter
+    checkpoint_path = args.checkpoint
+    base_model_name = model_cfg.get("name", "gpt2")
+    num_latent_tokens = model_cfg.get("num_latent_tokens", 0)
+
+    # Check if checkpoint is a LoRA adapter (has adapter_config.json)
+    is_lora_checkpoint = os.path.exists(os.path.join(checkpoint_path, "adapter_config.json"))
+
+    if is_lora_checkpoint:
+        logger.info("Loading base model from %s + LoRA from %s", base_model_name, checkpoint_path)
+        model = LatentReasoningModel(
+            model_name=base_model_name,
+            layer_ids=list(model_cfg.get("layer_ids", [-1, -2])),
+            num_latent_tokens=num_latent_tokens,
+            device=device,
+        )
+        # Load LoRA adapter
+        from peft import PeftModel
+        model.model = PeftModel.from_pretrained(model.model, checkpoint_path)
+        model.model.eval()
+        # Load latent_embeddings from checkpoint if saved separately
+        latent_path = os.path.join(checkpoint_path, "latent_embeddings.pt")
+        if os.path.exists(latent_path):
+            latent_state = torch.load(latent_path, map_location=device)
+            model.latent_embeddings.load_state_dict(latent_state)
+            logger.info("Loaded latent_embeddings from %s", latent_path)
+        # Try loading from pytorch checkpoint
+        else:
+            ckpt_files = [f for f in os.listdir(checkpoint_path) if f.startswith('checkpoint_epoch') and f.endswith('.pt')]
+            if not ckpt_files:
+                # Check parent dir for latest checkpoint
+                parent = os.path.dirname(checkpoint_path)
+                ckpt_files = sorted([f for f in os.listdir(parent) if f.startswith('checkpoint_epoch') and f.endswith('.pt')])
+                if ckpt_files:
+                    ckpt_path = os.path.join(parent, ckpt_files[-1])
+                    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+                    if 'model_state_dict' in ckpt and 'latent_embeddings.weight' in ckpt['model_state_dict']:
+                        model.latent_embeddings.weight.data = ckpt['model_state_dict']['latent_embeddings.weight']
+                        logger.info("Loaded latent_embeddings from %s", ckpt_path)
+    else:
+        logger.info("Loading model from %s", checkpoint_path)
+        model = LatentReasoningModel(
+            model_name=checkpoint_path,
+            layer_ids=list(model_cfg.get("layer_ids", [-1, -2])),
+            num_latent_tokens=num_latent_tokens,
+            device=device,
+        )
 
     # Load data (CLI --data_path overrides config)
     data_path = args.data_path or data_cfg.get("data_path")
