@@ -112,24 +112,28 @@ class Trainer:
 
     def _build_optimizer(self) -> AdamW:
         no_decay = {"bias", "LayerNorm.weight", "layer_norm.weight"}
+
+        # Separate latent_embeddings for higher learning rate
+        latent_params = []
+        other_params_decay = []
+        other_params_no_decay = []
+
+        for n, p in self.model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if "latent_embeddings" in n:
+                latent_params.append(p)
+            elif any(nd in n for nd in no_decay):
+                other_params_no_decay.append(p)
+            else:
+                other_params_decay.append(p)
+
         params = [
-            {
-                "params": [
-                    p
-                    for n, p in self.model.named_parameters()
-                    if not any(nd in n for nd in no_decay) and p.requires_grad
-                ],
-                "weight_decay": self.cfg["weight_decay"],
-            },
-            {
-                "params": [
-                    p
-                    for n, p in self.model.named_parameters()
-                    if any(nd in n for nd in no_decay) and p.requires_grad
-                ],
-                "weight_decay": 0.0,
-            },
+            {"params": other_params_decay, "weight_decay": self.cfg["weight_decay"]},
+            {"params": other_params_no_decay, "weight_decay": 0.0},
+            {"params": latent_params, "lr": self.cfg["learning_rate"] * 20, "weight_decay": 0.0},
         ]
+
         # Include transition module params if available
         if self.transition_module is not None:
             for p in self.transition_module.parameters():
