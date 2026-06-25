@@ -83,10 +83,15 @@ class Evaluator:
 
             batch_size = input_ids.size(0)
 
+            # Check if this is student mode (has latent_positions)
+            has_latent = batch.get("latent_positions") is not None
+            latent_token_id = getattr(self.model, 'latent_token_id', None)
+
             if use_chat_template and questions:
                 # Chat-template models: build prompt from raw question
                 prompt_input_ids_list = []
                 prompt_mask_list = []
+                new_latent_positions = []  # recalculated for new prompt
                 for i in range(batch_size):
                     messages = [
                         {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
@@ -98,8 +103,28 @@ class Evaluator:
                     encoded = self.model.tokenizer(
                         prompt_text, return_tensors="pt", add_special_tokens=False
                     )
-                    prompt_input_ids_list.append(encoded["input_ids"].squeeze(0).to(self.device))
-                    prompt_mask_list.append(encoded["attention_mask"].squeeze(0).to(self.device))
+                    p_ids = encoded["input_ids"].squeeze(0).to(self.device)
+                    p_mask = encoded["attention_mask"].squeeze(0).to(self.device)
+
+                    # For student mode: append <LATENT> tokens to prompt
+                    if has_latent and latent_token_id is not None:
+                        num_latent = self.model.num_latent_tokens
+                        latent_ids = torch.full((num_latent,), latent_token_id, device=self.device)
+                        latent_mask = torch.ones(num_latent, device=self.device)
+                        # Record latent positions (relative to new prompt)
+                        start_pos = p_ids.size(0)
+                        new_latent_positions.append(
+                            torch.arange(start_pos, start_pos + num_latent, device=self.device)
+                        )
+                        p_ids = torch.cat([p_ids, latent_ids])
+                        p_mask = torch.cat([p_mask, latent_mask])
+
+                    prompt_input_ids_list.append(p_ids)
+                    prompt_mask_list.append(p_mask)
+
+                # Override latent_positions with recalculated ones
+                if new_latent_positions:
+                    batch["latent_positions"] = torch.stack(new_latent_positions)
             else:
                 # Non-chat models: truncate to "Answer:" prefix
                 # In student mode, also keep <LATENT> tokens after "Answer:"

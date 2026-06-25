@@ -218,6 +218,10 @@ class LatentReasoningDataset(Dataset):
             if "answer_start" in sample:
                 result["answer_start"] = sample["answer_start"]
 
+            # Include raw question/answer for evaluation (chat template + reference)
+            result["question"] = record["question"]
+            result["answer"] = record["answer"]
+
             # Optionally include teacher-format data for bridge loss
             if self.include_teacher_format:
                 teacher_sample = self._prepare_fn(
