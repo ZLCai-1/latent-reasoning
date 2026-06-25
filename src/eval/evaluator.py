@@ -92,9 +92,16 @@ class Evaluator:
                 prompt_input_ids_list = []
                 prompt_mask_list = []
                 new_latent_positions = []  # recalculated for new prompt
+
+                # Student mode: direct answer; Teacher mode: full CoT
+                if has_latent:
+                    system_content = "Give only the final numerical answer within \\boxed{}. Do not explain."
+                else:
+                    system_content = "Please reason step by step, and put your final answer within \\boxed{}."
+
                 for i in range(batch_size):
                     messages = [
-                        {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+                        {"role": "system", "content": system_content},
                         {"role": "user", "content": questions[i]},
                     ]
                     prompt_text = self.model.tokenizer.apply_chat_template(

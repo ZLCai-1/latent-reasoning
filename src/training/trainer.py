@@ -131,7 +131,7 @@ class Trainer:
         params = [
             {"params": other_params_decay, "weight_decay": self.cfg["weight_decay"]},
             {"params": other_params_no_decay, "weight_decay": 0.0},
-            {"params": latent_params, "lr": self.cfg["learning_rate"] * 20, "weight_decay": 0.0},
+            {"params": latent_params, "lr": self.cfg["learning_rate"] * 100, "weight_decay": 0.0},
         ]
 
         # Include transition module params if available

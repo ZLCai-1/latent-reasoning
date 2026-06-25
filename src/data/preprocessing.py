@@ -314,11 +314,8 @@ def prepare_student_sample(
     # Mask question portion (everything before "Answer:") with -100
     answer_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
     answer_start = _find_subseq(ids_list, answer_token_ids)
-    if answer_start is not None:
-        labels[:answer_start] = -100
 
-    # Mask latent positions in labels (latent tokens should not contribute
-    # to generation loss — they have no ground-truth next token)
+    # Mask latent positions in labels
     for pos in latent_positions:
         labels[pos] = -100
 
@@ -329,6 +326,11 @@ def prepare_student_sample(
         answer_text_start = answer_start
     else:
         answer_text_start = 0
+
+    # CODI-style: mask EVERYTHING before the answer text
+    # (question + "Answer:" + <LATENT> tokens + spaces)
+    # Only the final answer participates in generation_loss
+    labels[:answer_text_start] = -100
 
     result: Dict[str, torch.Tensor] = {
         "input_ids": input_ids,
