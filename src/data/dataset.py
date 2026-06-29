@@ -197,6 +197,10 @@ class LatentReasoningDataset(Dataset):
                 "generate pre-computed spans."
             )
         spans = record.get("spans", record.get("steps", []))
+        # Defense: wrap List[str] into List[List[str]] to prevent
+        # character-level splitting in prepare_training_sample
+        if spans and isinstance(spans[0], str):
+            spans = [[s] for s in spans]
 
         if self.mode == "student":
             # Student mode: replace CoT with latent token placeholders

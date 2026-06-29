@@ -299,12 +299,24 @@ class Evaluator:
             questions = batch.get("question", [])
             batch_size = input_ids.size(0)
 
+            # Check if this is student mode (has latent_positions)
+            has_latent = batch.get("latent_positions") is not None
+            latent_token_id = getattr(self.model, 'latent_token_id', None)
+
             if use_chat_template and questions:
                 prompt_input_ids_list = []
                 prompt_mask_list = []
+                new_latent_positions = []
+
+                # Student mode: direct answer; Teacher mode: full CoT
+                if has_latent:
+                    system_content = "Give only the final numerical answer within \\boxed{}. Do not explain."
+                else:
+                    system_content = "Please reason step by step, and put your final answer within \\boxed{}."
+
                 for i in range(batch_size):
                     messages = [
-                        {"role": "system", "content": "Please reason step by step, and put your final answer within \\boxed{}."},
+                        {"role": "system", "content": system_content},
                         {"role": "user", "content": questions[i]},
                     ]
                     prompt_text = self.model.tokenizer.apply_chat_template(
@@ -313,8 +325,27 @@ class Evaluator:
                     encoded = self.model.tokenizer(
                         prompt_text, return_tensors="pt", add_special_tokens=False
                     )
-                    prompt_input_ids_list.append(encoded["input_ids"].squeeze(0).to(self.device))
-                    prompt_mask_list.append(encoded["attention_mask"].squeeze(0).to(self.device))
+                    p_ids = encoded["input_ids"].squeeze(0).to(self.device)
+                    p_mask = encoded["attention_mask"].squeeze(0).to(self.device)
+
+                    # For student mode: append <LATENT> tokens to prompt
+                    if has_latent and latent_token_id is not None:
+                        num_latent = self.model.num_latent_tokens
+                        latent_ids = torch.full((num_latent,), latent_token_id, device=self.device)
+                        latent_mask = torch.ones(num_latent, device=self.device)
+                        start_pos = p_ids.size(0)
+                        new_latent_positions.append(
+                            torch.arange(start_pos, start_pos + num_latent, device=self.device)
+                        )
+                        p_ids = torch.cat([p_ids, latent_ids])
+                        p_mask = torch.cat([p_mask, latent_mask])
+
+                    prompt_input_ids_list.append(p_ids)
+                    prompt_mask_list.append(p_mask)
+
+                # Override latent_positions with recalculated ones
+                if new_latent_positions:
+                    batch["latent_positions"] = torch.stack(new_latent_positions)
             else:
                 prompt_input_ids_list = []
                 prompt_mask_list = []
@@ -323,6 +354,10 @@ class Evaluator:
                     cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
+                        # Keep <LATENT> tokens (student mode)
+                        if latent_token_id is not None:
+                            while end < len(ids) and ids[end] == latent_token_id:
+                                end += 1
                     else:
                         end = len(ids) // 3
                     prompt_input_ids_list.append(input_ids[i, :end])
@@ -346,9 +381,14 @@ class Evaluator:
             prompt_input_ids = torch.stack(padded_ids).long()
             prompt_attention_mask = torch.stack(padded_mask).long()
 
+            # Pass latent_positions to generate for proper embedding injection
+            latent_pos = batch.get("latent_positions")
+            if latent_pos is not None:
+                latent_pos = latent_pos.to(self.device)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
+                latent_positions=latent_pos,
                 max_new_tokens=self.max_new_tokens,
             )
 

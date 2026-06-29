@@ -154,6 +154,11 @@ def prepare_training_sample(
         and optionally ``boundary_positions`` (tensor of boundary token
         positions).
     """
+    # Defense: if spans is List[str] (raw steps without grouping),
+    # auto-wrap into List[List[str]] to prevent character-level splitting.
+    if spans and isinstance(spans[0], str):
+        spans = [[s] for s in spans]
+
     if span_strategy == "none" or num_spans == 0:
         # Stage 0: plain CoT without boundaries
         cot_text = " ".join(" ".join(group) for group in spans)

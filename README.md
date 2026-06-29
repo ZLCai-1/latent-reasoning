@@ -13,14 +13,15 @@ src/
 ├── models/          # 模型封装 + 状态转移模块 + 损失函数
 ├── data/            # 数据加载 + 预处理 + Teacher状态提取
 ├── training/        # 训练循环 + 课程学习
-└── eval/            # 评估
+└── eval/            # 评估 + 诊断指标（diagnostics.py）
 
 scripts/
 ├── download_gsm8k.py          # 下载 GSM8K 数据集
 ├── preprocess_data.py         # 数据预处理（生成 spans）
 ├── train.py                   # 训练入口
 ├── extract_teacher_states.py  # 提取 Teacher 隐状态
-├── evaluate.py                # 评估
+├── evaluate.py                # 快速评估（accuracy + 效率）
+├── run_diagnostics.py         # 完整诊断（§5.6全部指标）
 ├── run_ablation.sh            # 一键跑消融实验
 ├── run_baselines.py           # 对比基线
 ├── test_e2e.py                # 端到端验证
@@ -99,12 +100,12 @@ python scripts/train.py --config config/exp/stage1_transition.yaml \
     model.name=models/qwen2.5-math-1.5b \
     data.data_path=data/gsm8k_train.json
 
-# 7. 评估
-python scripts/evaluate.py \
+# 7. 评估 + 完整诊断
+python scripts/run_diagnostics.py \
     --config config/exp/stage1_transition.yaml \
     --checkpoint checkpoints/stage1_transition/final \
-    --split test \
-    --data_path data/gsm8k_test.json
+    --data_path data/gsm8k_test.json \
+    --output results/diagnostics.json
 ```
 
 ### 超参搜索（4 卡并行）
@@ -165,6 +166,42 @@ python scripts/run_baselines.py --data_path data/gsm8k_train.json --model_name m
 | anchor_loss | 防止 hidden state 漂移 | 0.05-0.2 |
 | bridge_loss | 缓解 exposure mismatch（3项公式） | 0.05-0.1 |
 | generation_loss | 答案生成交叉熵 | 0.2-0.3 |
+
+## 诊断指标体系（§5.6）
+
+运行 `scripts/run_diagnostics.py` 一次性输出所有论文指标：
+
+| 类别 | 指标 | 含义 |
+|------|------|------|
+| §5.6.2 性能 | Accuracy, Exact Match | 任务准确率 |
+| §5.6.2 性能 | Accuracy Retention | 相对 CoT teacher 保留率 |
+| §5.6.3 效率 | Token Reduction, Compression Ratio | 推理成本降低 |
+| §5.6.3 效率 | Latency, Throughput | 端到端速度 |
+| §5.6.4 对齐 | Transition Cosine | 状态转移方向一致性 cos(ΔS, ΔT) |
+| §5.6.4 对齐 | Normalized Transition Error | 归一化转移误差 ‖ΔS-ΔT‖/‖ΔT‖ |
+| §5.6.4 对齐 | Endpoint Drift | 边界状态绝对漂移 |
+| §5.6.4 对齐 | Layer-wise CKA | 层间表征相似度 |
+| §5.6.5 稳定性 | Collapse Rate | latent token 同质化检测 |
+| §5.6.5 稳定性 | Pairwise Diversity | 表征多样性 |
+| §5.6.5 稳定性 | Effective Rank | 表征有效秩 |
+
+```bash
+# 基础用法
+python scripts/run_diagnostics.py \
+    --config config/exp/stage1_transition.yaml \
+    --checkpoint checkpoints/stage1_transition/final \
+    --data_path data/gsm8k_test.json \
+    --output results/diagnostics.json
+
+# 带 baseline 对比（计算 retention 和 relative gain）
+python scripts/run_diagnostics.py \
+    --config config/exp/stage1_transition.yaml \
+    --checkpoint checkpoints/stage1_transition/final \
+    --data_path data/gsm8k_test.json \
+    --cot_accuracy 0.75 \
+    --direct_accuracy 0.03 \
+    --output results/diagnostics.json
+```
 
 ## 硬件需求
 

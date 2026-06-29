@@ -212,7 +212,7 @@ def main() -> None:
     )
 
     # Evaluate
-    metrics = eval_cfg.get("metrics", ["accuracy", "exact_match"])
+    metrics = eval_cfg.get("metrics", ["accuracy"])
     evaluator = Evaluator(
         model=model,
         dataloader=dataloader,
@@ -230,8 +230,7 @@ def main() -> None:
     print("=" * 60)
     if "accuracy" in results:
         print(f"Accuracy: {results['accuracy'] * 100:.1f}%")
-    if "exact_match" in results:
-        print(f"Exact Match: {results['exact_match'] * 100:.1f}%")
+
     if "avg_tokens" in results:
         cot_bl = int(results.get("cot_baseline_tokens", 200))
         print(f"Avg Output Tokens: {results['avg_tokens']:.0f} (vs CoT baseline ~{cot_bl})")

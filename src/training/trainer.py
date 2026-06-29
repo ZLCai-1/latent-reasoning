@@ -647,7 +647,12 @@ class Trainer:
 
     @torch.no_grad()
     def _validate(self, epoch: int) -> float:
-        """Run validation and return mean loss."""
+        """Run validation and return mean loss.
+
+        Uses forward_with_latent() when latent_positions is present
+        (student mode) to ensure validation loss accurately reflects
+        the student model's performance with learned latent embeddings.
+        """
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -658,11 +663,21 @@ class Trainer:
             input_ids = batch["input_ids"].to(self.device)
             attention_mask = batch["attention_mask"].to(self.device)
             labels = batch["labels"].to(self.device)
+            latent_positions = batch.get("latent_positions")
 
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
+            if latent_positions is not None:
+                latent_positions = latent_positions.to(self.device)
+                outputs = self.model.forward_with_latent(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    latent_positions=latent_positions,
+                )
+            else:
+                outputs = self.model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                )
+
             loss = generation_loss(outputs["logits"], labels)
             total_loss += loss.item()
             num_batches += 1
