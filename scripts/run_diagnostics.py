@@ -78,6 +78,8 @@ def parse_args():
                         help="Direct answer accuracy for gain calc (0=skip)")
     parser.add_argument("--cot_avg_tokens", type=float, default=200.0,
                         help="Avg CoT output tokens for compression ratio")
+    parser.add_argument("--output", type=str, default="results/diagnostics.json",
+                        help="Path to save results JSON")
     return parser.parse_args()
 
 
