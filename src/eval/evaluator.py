@@ -184,13 +184,21 @@ class Evaluator:
 
             # Generate with timing
             t_start = time.time()
-            latent_pos = batch.get("latent_positions")
-            if latent_pos is not None:
-                latent_pos = latent_pos.to(self.device)
-                # Fix: adjust latent_positions for left-padding offset
-                if pad_side == "left":
-                    pad_offsets = torch.tensor(pad_lengths, device=self.device).unsqueeze(1)
-                    latent_pos = latent_pos + pad_offsets
+            # Recompute latent_positions from actual padded prompt
+            # (batch's latent_positions don't account for collate_fn + evaluator padding)
+            latent_pos = None
+            latent_token_id = getattr(self.model, 'latent_token_id', None)
+            if latent_token_id is not None and has_latent:
+                new_latent_pos = []
+                for i in range(batch_size):
+                    ids = prompt_input_ids[i].tolist()
+                    positions = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                    if positions:
+                        new_latent_pos.append(
+                            torch.tensor(positions[:self.model.num_latent_tokens], device=self.device)
+                        )
+                if new_latent_pos and len(new_latent_pos) == batch_size:
+                    latent_pos = torch.stack(new_latent_pos)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
@@ -399,13 +407,21 @@ class Evaluator:
             prompt_attention_mask = torch.stack(padded_mask).long()
 
             # Pass latent_positions to generate for proper embedding injection
-            latent_pos = batch.get("latent_positions")
-            if latent_pos is not None:
-                latent_pos = latent_pos.to(self.device)
-                # Fix: adjust latent_positions for left-padding offset
-                if pad_side == "left":
-                    pad_offsets = torch.tensor(pad_lengths, device=self.device).unsqueeze(1)
-                    latent_pos = latent_pos + pad_offsets
+            # Recompute from actual padded prompt (robust to any padding scheme)
+            latent_pos = None
+            latent_token_id = getattr(self.model, 'latent_token_id', None)
+            has_latent = batch.get("latent_positions") is not None
+            if latent_token_id is not None and has_latent:
+                new_latent_pos = []
+                for i in range(batch_size):
+                    ids = prompt_input_ids[i].tolist()
+                    positions = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                    if positions:
+                        new_latent_pos.append(
+                            torch.tensor(positions[:self.model.num_latent_tokens], device=self.device)
+                        )
+                if new_latent_pos and len(new_latent_pos) == batch_size:
+                    latent_pos = torch.stack(new_latent_pos)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
