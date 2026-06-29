@@ -80,6 +80,8 @@ def parse_args():
                         help="Avg CoT output tokens for compression ratio")
     parser.add_argument("--output", type=str, default="results/diagnostics.json",
                         help="Path to save results JSON")
+    parser.add_argument("--no_chat_template", action="store_true",
+                        help="Disable chat template for student evaluation (use raw text format matching training)")
     return parser.parse_args()
 
 
@@ -170,6 +172,7 @@ def run_task_metrics(model, cfg, args):
         metrics=["accuracy", "exact_match"],
         max_new_tokens=args.max_new_tokens,
         cot_baseline_tokens=int(args.cot_avg_tokens),
+        use_chat_template=False if args.no_chat_template else None,
     )
 
     t_start = time.time()
@@ -439,6 +442,7 @@ def main():
             model=model, dataloader=sample_loader,
             metrics=["accuracy"],
             max_new_tokens=args.max_new_tokens,
+            use_chat_template=False if args.no_chat_template else None,
         )
         samples = evaluator.generate_samples(num_samples=args.show_samples)
 

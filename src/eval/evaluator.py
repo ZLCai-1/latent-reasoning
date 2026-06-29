@@ -41,6 +41,7 @@ class Evaluator:
         metrics: Optional[List[str]] = None,
         max_new_tokens: int = 128,
         cot_baseline_tokens: int = 200,
+        use_chat_template: Optional[bool] = None,
     ) -> None:
         self.model = model
         self.dataloader = dataloader
@@ -48,6 +49,8 @@ class Evaluator:
         self.max_new_tokens = max_new_tokens
         self.cot_baseline_tokens = cot_baseline_tokens
         self.device = next(model.parameters()).device
+        # Allow explicit override of chat template detection
+        self._force_chat_template = use_chat_template
 
     @torch.no_grad()
     def evaluate(self) -> Dict[str, float]:
@@ -65,10 +68,13 @@ class Evaluator:
         all_inference_times: List[float] = []
 
         # Detect if model supports chat template (e.g. Qwen, Llama-Instruct)
-        use_chat_template = (
-            hasattr(self.model.tokenizer, 'chat_template')
-            and self.model.tokenizer.chat_template is not None
-        )
+        if self._force_chat_template is not None:
+            use_chat_template = self._force_chat_template
+        else:
+            use_chat_template = (
+                hasattr(self.model.tokenizer, 'chat_template')
+                and self.model.tokenizer.chat_template is not None
+            )
 
         # Find "Answer:" token ids for prompt truncation (non-chat models)
         answer_prefix_ids = self.model.tokenizer.encode(

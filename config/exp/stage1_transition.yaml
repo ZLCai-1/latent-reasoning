@@ -19,10 +19,10 @@ data:
   max_seq_length: 512
 
 training:
-  batch_size: 2
+  batch_size: 16
   learning_rate: 5.0e-5
   num_epochs: 10
-  gradient_accumulation_steps: 4
+  gradient_accumulation_steps: 2
   warmup_ratio: 0.1
   weight_decay: 0.01
   fp16: true
