@@ -64,7 +64,7 @@ logging:
 checkpoint:
   save_dir: "checkpoints/stage1_transition_v3"
   save_interval: 1
-  keep_top_k: 3
+  keep_top_k: 15
 
 teacher:
   model_name: null  # 使用 Stage 0 训练好的 teacher

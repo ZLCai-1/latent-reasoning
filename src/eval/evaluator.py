@@ -167,8 +167,10 @@ class Evaluator:
             pad_id = self.model.tokenizer.pad_token_id or 0
             padded_ids = []
             padded_mask = []
+            pad_lengths = []  # Track padding for latent_positions offset
             for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
                 pad_len = max_prompt_len - p_ids.size(0)
+                pad_lengths.append(pad_len)
                 pad_tensor = torch.full((pad_len,), pad_id, device=self.device)
                 mask_pad = torch.zeros(pad_len, device=self.device)
                 if pad_side == "left":
@@ -185,6 +187,10 @@ class Evaluator:
             latent_pos = batch.get("latent_positions")
             if latent_pos is not None:
                 latent_pos = latent_pos.to(self.device)
+                # Fix: adjust latent_positions for left-padding offset
+                if pad_side == "left":
+                    pad_offsets = torch.tensor(pad_lengths, device=self.device).unsqueeze(1)
+                    latent_pos = latent_pos + pad_offsets
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
@@ -377,8 +383,10 @@ class Evaluator:
             pad_id = self.model.tokenizer.pad_token_id or 0
             padded_ids = []
             padded_mask = []
+            pad_lengths = []  # Track padding for latent_positions offset
             for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
                 pad_len = max_prompt_len - p_ids.size(0)
+                pad_lengths.append(pad_len)
                 pad_tensor = torch.full((pad_len,), pad_id, device=self.device)
                 mask_pad = torch.zeros(pad_len, device=self.device)
                 if pad_side == "left":
@@ -394,6 +402,10 @@ class Evaluator:
             latent_pos = batch.get("latent_positions")
             if latent_pos is not None:
                 latent_pos = latent_pos.to(self.device)
+                # Fix: adjust latent_positions for left-padding offset
+                if pad_side == "left":
+                    pad_offsets = torch.tensor(pad_lengths, device=self.device).unsqueeze(1)
+                    latent_pos = latent_pos + pad_offsets
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
