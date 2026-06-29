@@ -283,11 +283,14 @@ class Evaluator:
         self.model.eval()
         samples: List[Dict[str, str]] = []
 
-        # Detect chat template support
-        use_chat_template = (
-            hasattr(self.model.tokenizer, 'chat_template')
-            and self.model.tokenizer.chat_template is not None
-        )
+        # Detect chat template support (respect override)
+        if self._force_chat_template is not None:
+            use_chat_template = self._force_chat_template
+        else:
+            use_chat_template = (
+                hasattr(self.model.tokenizer, 'chat_template')
+                and self.model.tokenizer.chat_template is not None
+            )
 
         # Find "Answer:" token ids for prompt truncation (non-chat models)
         answer_prefix_ids = self.model.tokenizer.encode(
