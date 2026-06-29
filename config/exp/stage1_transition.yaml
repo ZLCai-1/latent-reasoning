@@ -36,20 +36,20 @@ lora:
   dropout: 0.05
 
 loss:
-  transition_weight: 0.95
-  anchor_weight: 0.0
-  bridge_weight: 0.0
-  generation_weight: 0.05
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
   normalize_transition: true
   bridge_rho: 1.0
   bridge_xi: 0.5
 
 curriculum:
-  enabled: false
+  enabled: true
   stages:
-    - {num_latent: 1, epochs: 5, transition_weight: 0.8, generation_weight: 0.2, anchor_weight: 0.05, bridge_weight: 0.05}
-    - {num_latent: 2, epochs: 5, transition_weight: 0.7, generation_weight: 0.3, anchor_weight: 0.15, bridge_weight: 0.05}
-    - {num_latent: 3, epochs: 5, transition_weight: 0.5, generation_weight: 0.3, anchor_weight: 0.2, bridge_weight: 0.1}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.7, generation_weight: 0.2, anchor_weight: 0.05, bridge_weight: 0.05}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.5, generation_weight: 0.3, anchor_weight: 0.1, bridge_weight: 0.1}
+    - {num_latent: 3, epochs: 5, transition_weight: 0.3, generation_weight: 0.4, anchor_weight: 0.15, bridge_weight: 0.15}
 
 evaluation:
   eval_interval: 1
@@ -62,7 +62,7 @@ logging:
   log_interval: 50
 
 checkpoint:
-  save_dir: "checkpoints/stage1_transition"
+  save_dir: "checkpoints/stage1_transition_v3"
   save_interval: 1
   keep_top_k: 3
 
