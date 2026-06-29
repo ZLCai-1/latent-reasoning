@@ -68,9 +68,10 @@ def parse_args():
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--split", type=str, default="test")
     parser.add_argument("--batch_size", type=int, default=4)
-    parser.add_argument("--max_samples", type=int, default=0, help="0 = all")
+    parser.add_argument("--max_samples", type=int, default=0, help="0 = all, set small (e.g. 10) for quick sanity check")
     parser.add_argument("--max_new_tokens", type=int, default=128)
-    parser.add_argument("--output", type=str, default="results/diagnostics.json")
+    parser.add_argument("--show_samples", type=int, default=5,
+                        help="Number of qualitative samples to save in output")
     parser.add_argument("--cot_accuracy", type=float, default=0.0,
                         help="Explicit CoT accuracy for retention calc (0=skip)")
     parser.add_argument("--direct_accuracy", type=float, default=0.0,
@@ -404,6 +405,52 @@ def main():
     # Run transition diagnostics (§5.6.4 & §5.6.5)
     diag_results = run_transition_diagnostics(model, cfg, args)
 
+    # Generate qualitative samples for inspection
+    samples = []
+    if args.show_samples > 0:
+        from src.eval.evaluator import Evaluator
+        data_cfg = cfg.get("data", {})
+        model_cfg = cfg.get("model", {})
+        num_latent_tokens = model_cfg.get("num_latent_tokens", 0)
+        data_path = args.data_path or data_cfg.get("data_path")
+        raw_data = load_gsm8k(data_path=data_path, split=args.split)
+        if args.max_samples > 0:
+            raw_data = raw_data[:args.max_samples]
+
+        dataset = LatentReasoningDataset(
+            data=raw_data,
+            tokenizer=model.tokenizer,
+            max_seq_length=data_cfg.get("max_seq_length", 512),
+            num_spans=data_cfg.get("num_spans", 3),
+            span_strategy=data_cfg.get("span_strategy", "fixed"),
+            mode="student" if num_latent_tokens > 0 else "teacher",
+            num_latent_tokens=num_latent_tokens,
+        )
+        pad_token_id = model.tokenizer.pad_token_id or 0
+        model_type = getattr(model.model.config, 'model_type', 'gpt2')
+        eval_padding_side = "right" if model_type == "gpt2" else "left"
+        sample_loader = DataLoader(
+            dataset, batch_size=args.batch_size, shuffle=False,
+            collate_fn=lambda b: collate_fn(b, pad_token_id=pad_token_id, padding_side=eval_padding_side),
+        )
+        evaluator = Evaluator(
+            model=model, dataloader=sample_loader,
+            metrics=["accuracy"],
+            max_new_tokens=args.max_new_tokens,
+        )
+        samples = evaluator.generate_samples(num_samples=args.show_samples)
+
+        # Print samples to terminal
+        print("\n" + "=" * 70)
+        print("         QUALITATIVE SAMPLES")
+        print("=" * 70)
+        for i, s in enumerate(samples):
+            print(f"\n--- Sample {i+1} ---")
+            print(f"  Question:   {s['input'][:150]}")
+            print(f"  Prediction: {s['prediction'][:150]}")
+            print(f"  Reference:  {s['reference']}")
+        print("=" * 70)
+
     # Print formatted report
     print_report(task_results, diag_results)
 
@@ -412,6 +459,7 @@ def main():
     full_results = {
         "task_metrics": {k: v for k, v in task_results.items() if not isinstance(v, torch.Tensor)},
         "transition_diagnostics": diag_results,
+        "qualitative_samples": samples,
     }
     with open(args.output, "w") as f:
         json.dump(full_results, f, indent=2, ensure_ascii=False)
