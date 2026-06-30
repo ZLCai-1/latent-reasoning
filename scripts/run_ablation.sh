@@ -35,18 +35,21 @@ ABLATION_ROOT=checkpoints/ablation
 RESULTS_ROOT=results/ablation
 
 CONFIGS=(
+    config/exp/ablation/full_loss.yaml
     config/exp/ablation/no_transition.yaml
     config/exp/ablation/no_anchor.yaml
     config/exp/ablation/no_bridge.yaml
     config/exp/ablation/transition_only.yaml
-    config/exp/ablation/full_loss.yaml
+    config/exp/ablation/endpoint_only.yaml
     config/exp/ablation/k1.yaml
     config/exp/ablation/k2.yaml
+    config/exp/ablation/k3.yaml
     config/exp/ablation/k5.yaml
     config/exp/ablation/layer_last1.yaml
     config/exp/ablation/layer_last4.yaml
     config/exp/ablation/layer_all.yaml
     config/exp/ablation/dist_cosine.yaml
+    config/exp/ablation/dist_l2.yaml
 )
 
 mkdir -p "$ABLATION_ROOT" "$RESULTS_ROOT"
