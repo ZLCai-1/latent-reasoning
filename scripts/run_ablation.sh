@@ -79,6 +79,8 @@ for i in "${!CONFIGS[@]}"; do
         model.name="$BASE_MODEL" \
         data.data_path="$TRAIN_DATA" \
         training.num_epochs="$NUM_EPOCHS" \
+        training.batch_size=4 \
+        training.gradient_accumulation_steps=4 \
         checkpoint.save_dir="$SAVE_DIR" \
         checkpoint.keep_top_k=999 \
         logging.use_wandb=false \
