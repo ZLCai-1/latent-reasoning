@@ -22,21 +22,3 @@ logging:
 
 checkpoint:
   save_dir: "checkpoints/ablation/full_loss"
-# =============================================================================
-# 消融实验：全部 4 个 loss 都开启
-# =============================================================================
-
-defaults:
-  - ../stage1_transition
-
-loss:
-  transition_weight: 0.5
-  anchor_weight: 0.2
-  bridge_weight: 0.1
-  generation_weight: 0.2
-
-logging:
-  run_name: "ablation-full-loss"
-
-checkpoint:
-  save_dir: "checkpoints/ablation/full_loss"

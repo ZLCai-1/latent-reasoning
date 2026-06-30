@@ -27,15 +27,3 @@ checkpoint:
 # =============================================================================
 # 消融实验：K=3（与 stage1 默认相同，作为对照组）
 # =============================================================================
-
-defaults:
-  - ../stage1_transition
-
-model:
-  num_latent_tokens: 3
-
-logging:
-  run_name: "ablation-k3"
-
-checkpoint:
-  save_dir: "checkpoints/ablation/k3"

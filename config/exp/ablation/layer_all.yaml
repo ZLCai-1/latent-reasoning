@@ -30,15 +30,3 @@ checkpoint:
 # =============================================================================
 # 消融实验：对齐所有层（GPT-2 共 12 层 + embedding 层 = 13 个输出）
 # =============================================================================
-
-defaults:
-  - ../stage1_transition
-
-model:
-  layer_ids: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-
-logging:
-  run_name: "ablation-layer-all"
-
-checkpoint:
-  save_dir: "checkpoints/ablation/layer_all"

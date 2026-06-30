@@ -9,9 +9,7 @@ model:
   num_latent_tokens: 1
 
 curriculum:
-  enabled: true
-  stages:
-    - {num_latent: 1, epochs: 15, transition_weight: 0.7, generation_weight: 0.3}
+  enabled: false
 
 logging:
   run_name: "ablation-k1"
