@@ -61,7 +61,7 @@ logging:
 checkpoint:
   save_dir: "checkpoints"
   save_interval: 1  # per epoch
-  keep_top_k: 3
+  keep_top_k: 15
   resume_from: null
 
 teacher:

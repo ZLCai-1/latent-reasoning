@@ -19,10 +19,10 @@ data:
   max_seq_length: 512
 
 training:
-  batch_size: 16
+  batch_size: 32
   learning_rate: 5.0e-5
   num_epochs: 10
-  gradient_accumulation_steps: 2
+  gradient_accumulation_steps: 1
   warmup_ratio: 0.1
   weight_decay: 0.01
   fp16: true
@@ -70,5 +70,5 @@ teacher:
   model_name: null  # 使用 Stage 0 训练好的 teacher
   cache_dir: "data/teacher_states"
   cache_format: "hdf5"
-  extract_batch_size: 8
+  extract_batch_size: 32
   store_fp16: true

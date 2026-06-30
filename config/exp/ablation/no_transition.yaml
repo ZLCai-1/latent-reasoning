@@ -1,13 +1,21 @@
 # =============================================================================
-# 消融实验：去掉 transition loss
+# 消融实验：去掉 transition loss（保留 anchor + bridge + generation）
+# 验证：状态转移监督的核心贡献
 # =============================================================================
 
 defaults:
   - ../stage1_transition
 
+# 禁用 curriculum，避免 loss 权重被动态覆盖
+curriculum:
+  enabled: false
+
 loss:
-  transition_weight: 0.0
-  generation_weight: 1.0
+  transition_weight: 0.0    # ← 消融目标
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
+  normalize_transition: true
 
 logging:
   run_name: "ablation-no-transition"

@@ -101,7 +101,7 @@ class Trainer:
             "log_interval": 50,
             "save_dir": "checkpoints",
             "save_interval": 1,
-            "keep_top_k": 3,
+            "keep_top_k": 15,
             # Evaluation
             "eval_interval": 1,
         }
@@ -208,24 +208,29 @@ class Trainer:
                 if k in loss_breakdown and loss_breakdown[k] > 0:
                     parts.append(f"{k}={loss_breakdown[k]:.4f}")
             logger.info("Epoch %d \u2014 %s", epoch, ", ".join(parts))
-
+        
             # Validation
             if (
                 self.val_dataloader is not None
                 and (epoch + 1) % self.cfg["eval_interval"] == 0
             ):
                 val_loss = self._validate(epoch)
-                logger.info("Epoch %d — val_loss=%.4f", epoch, val_loss)
-
+                logger.info("Epoch %d \u2014 val_loss=%.4f", epoch, val_loss)
+        
                 if self.wandb_run is not None:
                     import wandb
                     wandb.log({"val_loss": val_loss, "epoch": epoch})
-
+        
+                # Track best val_loss and save best checkpoint
+                if val_loss < self.best_metric:
+                    self.best_metric = val_loss
+                    self._save_best_checkpoint(epoch, val_loss)
+        
             # Checkpoint
             if (epoch + 1) % self.cfg["save_interval"] == 0:
                 self._save_checkpoint(epoch, train_loss)
-
-        logger.info("Training complete.")
+        
+        logger.info("Training complete. Best val_loss=%.4f", self.best_metric)
 
     def _train_epoch(self, epoch: int) -> tuple:
         """Train for one epoch; returns (mean_loss, loss_breakdown)."""
@@ -708,14 +713,37 @@ class Trainer:
             state["transition_module_state_dict"] = self.transition_module.state_dict()
 
         torch.save(state, ckpt_path)
-        logger.info("Checkpoint saved → %s", ckpt_path)
-
+        logger.info("Checkpoint saved \u2192 %s", ckpt_path)
+    
         # Keep only top-k checkpoints
         self._cleanup_checkpoints(save_dir)
+    
+    def _save_best_checkpoint(self, epoch: int, val_loss: float) -> None:
+        """Save the best checkpoint (by val_loss) separately.
+    
+        This file is never deleted by _cleanup_checkpoints, ensuring
+        the best model is always available for final export.
+        """
+        save_dir = Path(self.cfg["save_dir"])
+        save_dir.mkdir(parents=True, exist_ok=True)
+    
+        best_path = save_dir / "checkpoint_best.pt"
+        state = {
+            "epoch": epoch,
+            "global_step": self.global_step,
+            "model_state_dict": self.model.state_dict(),
+            "val_loss": val_loss,
+            "config": self.cfg,
+        }
+        if self.transition_module is not None:
+            state["transition_module_state_dict"] = self.transition_module.state_dict()
+    
+        torch.save(state, best_path)
+        logger.info("Best checkpoint updated \u2192 %s (epoch=%d, val_loss=%.4f)", best_path, epoch, val_loss)
 
     def _cleanup_checkpoints(self, save_dir: Path) -> None:
         """Remove old checkpoints, keeping only the most recent K."""
-        keep_k = self.cfg.get("keep_top_k", 3)
+        keep_k = self.cfg.get("keep_top_k", 15)
         ckpts = sorted(save_dir.glob("checkpoint_epoch*.pt"), key=os.path.getmtime)
         while len(ckpts) > keep_k:
             oldest = ckpts.pop(0)

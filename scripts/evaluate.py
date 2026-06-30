@@ -63,13 +63,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--batch_size",
         type=int,
-        default=8,
+        default=32,
         help="Batch size for evaluation.",
     )
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=128,
+        default=512,
         help="Max tokens to generate.",
     )
     parser.add_argument(
@@ -81,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--show_samples",
         type=int,
-        default=5,
+        default=10,
         help="Number of qualitative samples to display.",
     )
     parser.add_argument(

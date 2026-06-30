@@ -1,4 +1,30 @@
 # =============================================================================
+# 消融实验：K=3（与 full_loss 同配置，作为 K 消融的对照基线）
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+model:
+  num_latent_tokens: 3
+
+# 禁用 curriculum，保证与 layer/dist 等消融一致
+curriculum:
+  enabled: false
+
+loss:
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
+  normalize_transition: true
+
+logging:
+  run_name: "ablation-k3"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/k3"
+# =============================================================================
 # 消融实验：K=3（与 stage1 默认相同，作为对照组）
 # =============================================================================
 

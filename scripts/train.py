@@ -285,7 +285,7 @@ def main() -> None:
         # Checkpoints
         "save_dir": cfg.get("checkpoint", {}).get("save_dir", "checkpoints"),
         "save_interval": cfg.get("checkpoint", {}).get("save_interval", 1),
-        "keep_top_k": cfg.get("checkpoint", {}).get("keep_top_k", 3),
+        "keep_top_k": cfg.get("checkpoint", {}).get("keep_top_k", 15),
         # Eval
         "eval_interval": cfg.get("evaluation", {}).get("eval_interval", 1),
         "eval_metrics": list(cfg.get("evaluation", {}).get("metrics", ["accuracy", "exact_match"])),
@@ -310,10 +310,25 @@ def main() -> None:
     # ---- Train ----
     trainer.train()
 
-    # ---- Save final model ----
+    # ---- Save final model (from best val_loss checkpoint) ----
     final_dir = os.path.join(trainer_config["save_dir"], "final")
+    best_ckpt_path = os.path.join(trainer_config["save_dir"], "checkpoint_best.pt")
+
+    if os.path.exists(best_ckpt_path):
+        # Load best checkpoint and save as final
+        best_state = torch.load(best_ckpt_path, map_location=device, weights_only=False)
+        model.load_state_dict(best_state["model_state_dict"])
+        best_epoch = best_state.get("epoch", "?")
+        best_val = best_state.get("val_loss", "?")
+        logger.info("Loading best checkpoint (epoch=%s, val_loss=%s) for final save", best_epoch, best_val)
+    else:
+        logger.info("No best checkpoint found, saving last epoch as final")
+
     model.save_pretrained(final_dir)
-    logger.info("Training complete. Final model saved to %s", final_dir)
+    # Also save latent_embeddings separately for easy loading
+    latent_path = os.path.join(final_dir, "latent_embeddings.pt")
+    torch.save(model.latent_embeddings.state_dict(), latent_path)
+    logger.info("Final model saved to %s", final_dir)
 
 
 if __name__ == "__main__":

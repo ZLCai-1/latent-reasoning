@@ -1,4 +1,28 @@
 # =============================================================================
+# 消融实验：完整 4-loss baseline（固定权重，无 curriculum）
+# 作为所有消融的对照基线
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+# 禁用 curriculum，避免 loss 权重被动态覆盖
+curriculum:
+  enabled: false
+
+loss:
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
+  normalize_transition: true
+
+logging:
+  run_name: "ablation-full-loss"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/full_loss"
+# =============================================================================
 # 消融实验：全部 4 个 loss 都开启
 # =============================================================================
 

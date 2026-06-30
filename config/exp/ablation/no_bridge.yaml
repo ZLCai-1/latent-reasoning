@@ -1,4 +1,28 @@
 # =============================================================================
+# 消融实验：去掉 bridge loss（保留 transition + anchor + generation）
+# 验证：bridge 缓解 exposure mismatch 的贡献，预期 bridge_gap 上升
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+# 禁用 curriculum，避免 loss 权重被动态覆盖
+curriculum:
+  enabled: false
+
+loss:
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.0    # ← 消融目标
+  generation_weight: 0.3
+  normalize_transition: true
+
+logging:
+  run_name: "ablation-no-bridge"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/no_bridge"
+# =============================================================================
 # 消融实验：去掉 bridge loss
 # =============================================================================
 

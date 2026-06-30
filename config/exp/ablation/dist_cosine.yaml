@@ -1,4 +1,28 @@
 # =============================================================================
+# 消融实验：Std 归一化距离（CODI-style，与默认相同，作为对照）
+# 验证：归一化的影响
+# =============================================================================
+
+defaults:
+  - ../stage1_transition
+
+# 禁用 curriculum，保证 loss 权重稳定可比
+curriculum:
+  enabled: false
+
+loss:
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
+  normalize_transition: true    # ← 消融目标：开启归一化
+
+logging:
+  run_name: "ablation-dist-cosine"
+
+checkpoint:
+  save_dir: "checkpoints/ablation/dist_cosine"
+# =============================================================================
 # 消融实验：余弦距离（normalize_transition=true）
 # =============================================================================
 
