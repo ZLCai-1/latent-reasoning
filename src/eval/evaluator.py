@@ -139,18 +139,32 @@ class Evaluator:
                 if new_latent_positions:
                     batch["latent_positions"] = torch.stack(new_latent_positions)
             else:
-                # Non-chat models: truncate to "Answer:" prefix
-                # In student mode, also keep <LATENT> tokens after "Answer:"
+                # Non-chat models: truncate to prompt (before answer text)
+                # Strategy: find latent tokens directly, or fall back to "Answer:" prefix
                 latent_token_id = getattr(self.model, 'latent_token_id', None)
                 prompt_input_ids_list = []
                 prompt_mask_list = []
                 for i in range(batch_size):
                     ids = input_ids[i].tolist()
+                    
+                    # Strategy 1: Find latent tokens directly (most reliable)
+                    if has_latent and latent_token_id is not None:
+                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                        if latent_positions_in_seq:
+                            # Include everything up to and including the last latent token
+                            end = latent_positions_in_seq[-1] + 1
+                            prompt_input_ids_list.append(input_ids[i, :end])
+                            prompt_mask_list.append(attention_mask[i, :end])
+                            continue
+                    
+                    # Strategy 2: Fall back to "Answer:" prefix search
                     cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
-                        # Keep <LATENT> tokens (student mode)
+                        # Skip whitespace tokens after "Answer:"
                         if latent_token_id is not None:
+                            while end < len(ids) and ids[end] != latent_token_id and end < cut_pos + len(answer_prefix_ids) + 3:
+                                end += 1  # skip space tokens
                             while end < len(ids) and ids[end] == latent_token_id:
                                 end += 1
                     else:
@@ -374,11 +388,23 @@ class Evaluator:
                 prompt_mask_list = []
                 for i in range(batch_size):
                     ids = input_ids[i].tolist()
+                    
+                    # Strategy 1: Find latent tokens directly (most reliable)
+                    if has_latent and latent_token_id is not None:
+                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                        if latent_positions_in_seq:
+                            end = latent_positions_in_seq[-1] + 1
+                            prompt_input_ids_list.append(input_ids[i, :end])
+                            prompt_mask_list.append(attention_mask[i, :end])
+                            continue
+                    
+                    # Strategy 2: Fall back to "Answer:" prefix search
                     cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
-                        # Keep <LATENT> tokens (student mode)
                         if latent_token_id is not None:
+                            while end < len(ids) and ids[end] != latent_token_id and end < cut_pos + len(answer_prefix_ids) + 3:
+                                end += 1
                             while end < len(ids) and ids[end] == latent_token_id:
                                 end += 1
                     else:

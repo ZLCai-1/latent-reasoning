@@ -35,10 +35,16 @@ Thumbs.db
 *.tmp
 *.swp
 
-# PDF文件
+# PDF、md、zip文件
 *.pdf
+*.md    
+*.zip
 
 # 分析报告（非核心代码）
 bug_analysis_report.md
 export.md
 latent_reasoning_research_proposal.md
+
+#实验清单
+0.2/
+0.3/
