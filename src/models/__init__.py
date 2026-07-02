@@ -1,4 +1,4 @@
-from .base import LatentReasoningModel, LATENT_TOKEN, SPAN_START_TOKEN, SPAN_END_TOKEN
+from .base import LatentReasoningModel, SPAN_START_TOKEN, SPAN_END_TOKEN, get_latent_token_names, get_special_tokens
 from .state_transition import StateTransitionModule
 from .loss_functions import (
     transition_loss,
@@ -10,7 +10,8 @@ from .loss_functions import (
 
 __all__ = [
     "LatentReasoningModel",
-    "LATENT_TOKEN",
+    "get_latent_token_names",
+    "get_special_tokens",
     "SPAN_START_TOKEN",
     "SPAN_END_TOKEN",
     "StateTransitionModule",

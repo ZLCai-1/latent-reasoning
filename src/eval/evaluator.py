@@ -91,13 +91,12 @@ class Evaluator:
 
             # Check if this is student mode (has latent_positions)
             has_latent = batch.get("latent_positions") is not None
-            latent_token_id = getattr(self.model, 'latent_token_id', None)
+            latent_token_ids_set = set(getattr(self.model, 'latent_token_ids', []))
 
             if use_chat_template and questions:
                 # Chat-template models: build prompt from raw question
                 prompt_input_ids_list = []
                 prompt_mask_list = []
-                new_latent_positions = []  # recalculated for new prompt
 
                 # Student mode: direct answer; Teacher mode: full CoT
                 if has_latent:
@@ -119,37 +118,28 @@ class Evaluator:
                     p_ids = encoded["input_ids"].squeeze(0).to(self.device)
                     p_mask = encoded["attention_mask"].squeeze(0).to(self.device)
 
-                    # For student mode: append <LATENT> tokens to prompt
-                    if has_latent and latent_token_id is not None:
-                        num_latent = self.model.num_latent_tokens
-                        latent_ids = torch.full((num_latent,), latent_token_id, device=self.device)
-                        latent_mask = torch.ones(num_latent, device=self.device)
-                        # Record latent positions (relative to new prompt)
-                        start_pos = p_ids.size(0)
-                        new_latent_positions.append(
-                            torch.arange(start_pos, start_pos + num_latent, device=self.device)
+                    # For student mode: append <LATENT_k> tokens to prompt
+                    if has_latent and latent_token_ids_set:
+                        latent_ids_tensor = torch.tensor(
+                            list(self.model.latent_token_ids), device=self.device
                         )
-                        p_ids = torch.cat([p_ids, latent_ids])
+                        latent_mask = torch.ones(len(latent_ids_tensor), device=self.device)
+                        p_ids = torch.cat([p_ids, latent_ids_tensor])
                         p_mask = torch.cat([p_mask, latent_mask])
 
                     prompt_input_ids_list.append(p_ids)
                     prompt_mask_list.append(p_mask)
-
-                # Override latent_positions with recalculated ones
-                if new_latent_positions:
-                    batch["latent_positions"] = torch.stack(new_latent_positions)
             else:
                 # Non-chat models: truncate to prompt (before answer text)
                 # Strategy: find latent tokens directly, or fall back to "Answer:" prefix
-                latent_token_id = getattr(self.model, 'latent_token_id', None)
                 prompt_input_ids_list = []
                 prompt_mask_list = []
                 for i in range(batch_size):
                     ids = input_ids[i].tolist()
                     
                     # Strategy 1: Find latent tokens directly (most reliable)
-                    if has_latent and latent_token_id is not None:
-                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                    if has_latent and latent_token_ids_set:
+                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid in latent_token_ids_set]
                         if latent_positions_in_seq:
                             # Include everything up to and including the last latent token
                             end = latent_positions_in_seq[-1] + 1
@@ -162,10 +152,10 @@ class Evaluator:
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
                         # Skip whitespace tokens after "Answer:"
-                        if latent_token_id is not None:
-                            while end < len(ids) and ids[end] != latent_token_id and end < cut_pos + len(answer_prefix_ids) + 3:
+                        if latent_token_ids_set:
+                            while end < len(ids) and ids[end] not in latent_token_ids_set and end < cut_pos + len(answer_prefix_ids) + 3:
                                 end += 1  # skip space tokens
-                            while end < len(ids) and ids[end] == latent_token_id:
+                            while end < len(ids) and ids[end] in latent_token_ids_set:
                                 end += 1
                     else:
                         end = len(ids) // 3
@@ -196,27 +186,11 @@ class Evaluator:
             prompt_input_ids = torch.stack(padded_ids).long()
             prompt_attention_mask = torch.stack(padded_mask).long()
 
-            # Generate with timing
+            # Generate with timing (V2: no latent_positions needed, uses input_ids path)
             t_start = time.time()
-            # Recompute latent_positions from actual padded prompt
-            # (batch's latent_positions don't account for collate_fn + evaluator padding)
-            latent_pos = None
-            latent_token_id = getattr(self.model, 'latent_token_id', None)
-            if latent_token_id is not None and has_latent:
-                new_latent_pos = []
-                for i in range(batch_size):
-                    ids = prompt_input_ids[i].tolist()
-                    positions = [j for j, tid in enumerate(ids) if tid == latent_token_id]
-                    if positions:
-                        new_latent_pos.append(
-                            torch.tensor(positions[:self.model.num_latent_tokens], device=self.device)
-                        )
-                if new_latent_pos and len(new_latent_pos) == batch_size:
-                    latent_pos = torch.stack(new_latent_pos)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
-                latent_positions=latent_pos,
                 max_new_tokens=self.max_new_tokens,
             )
             t_end = time.time()
@@ -338,12 +312,11 @@ class Evaluator:
 
             # Check if this is student mode (has latent_positions)
             has_latent = batch.get("latent_positions") is not None
-            latent_token_id = getattr(self.model, 'latent_token_id', None)
+            latent_token_ids_set = set(getattr(self.model, 'latent_token_ids', []))
 
             if use_chat_template and questions:
                 prompt_input_ids_list = []
                 prompt_mask_list = []
-                new_latent_positions = []
 
                 # Student mode: direct answer; Teacher mode: full CoT
                 if has_latent:
@@ -365,24 +338,17 @@ class Evaluator:
                     p_ids = encoded["input_ids"].squeeze(0).to(self.device)
                     p_mask = encoded["attention_mask"].squeeze(0).to(self.device)
 
-                    # For student mode: append <LATENT> tokens to prompt
-                    if has_latent and latent_token_id is not None:
-                        num_latent = self.model.num_latent_tokens
-                        latent_ids = torch.full((num_latent,), latent_token_id, device=self.device)
-                        latent_mask = torch.ones(num_latent, device=self.device)
-                        start_pos = p_ids.size(0)
-                        new_latent_positions.append(
-                            torch.arange(start_pos, start_pos + num_latent, device=self.device)
+                    # For student mode: append <LATENT_k> tokens to prompt
+                    if has_latent and latent_token_ids_set:
+                        latent_ids_tensor = torch.tensor(
+                            list(self.model.latent_token_ids), device=self.device
                         )
-                        p_ids = torch.cat([p_ids, latent_ids])
+                        latent_mask = torch.ones(len(latent_ids_tensor), device=self.device)
+                        p_ids = torch.cat([p_ids, latent_ids_tensor])
                         p_mask = torch.cat([p_mask, latent_mask])
 
                     prompt_input_ids_list.append(p_ids)
                     prompt_mask_list.append(p_mask)
-
-                # Override latent_positions with recalculated ones
-                if new_latent_positions:
-                    batch["latent_positions"] = torch.stack(new_latent_positions)
             else:
                 prompt_input_ids_list = []
                 prompt_mask_list = []
@@ -390,8 +356,8 @@ class Evaluator:
                     ids = input_ids[i].tolist()
                     
                     # Strategy 1: Find latent tokens directly (most reliable)
-                    if has_latent and latent_token_id is not None:
-                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid == latent_token_id]
+                    if has_latent and latent_token_ids_set:
+                        latent_positions_in_seq = [j for j, tid in enumerate(ids) if tid in latent_token_ids_set]
                         if latent_positions_in_seq:
                             end = latent_positions_in_seq[-1] + 1
                             prompt_input_ids_list.append(input_ids[i, :end])
@@ -402,10 +368,10 @@ class Evaluator:
                     cut_pos = self._find_answer_prefix(ids, answer_prefix_ids)
                     if cut_pos is not None:
                         end = cut_pos + len(answer_prefix_ids)
-                        if latent_token_id is not None:
-                            while end < len(ids) and ids[end] != latent_token_id and end < cut_pos + len(answer_prefix_ids) + 3:
+                        if latent_token_ids_set:
+                            while end < len(ids) and ids[end] not in latent_token_ids_set and end < cut_pos + len(answer_prefix_ids) + 3:
                                 end += 1
-                            while end < len(ids) and ids[end] == latent_token_id:
+                            while end < len(ids) and ids[end] in latent_token_ids_set:
                                 end += 1
                     else:
                         end = len(ids) // 3
@@ -417,10 +383,8 @@ class Evaluator:
             pad_id = self.model.tokenizer.pad_token_id or 0
             padded_ids = []
             padded_mask = []
-            pad_lengths = []  # Track padding for latent_positions offset
             for p_ids, p_mask in zip(prompt_input_ids_list, prompt_mask_list):
                 pad_len = max_prompt_len - p_ids.size(0)
-                pad_lengths.append(pad_len)
                 pad_tensor = torch.full((pad_len,), pad_id, device=self.device)
                 mask_pad = torch.zeros(pad_len, device=self.device)
                 if pad_side == "left":
@@ -432,26 +396,10 @@ class Evaluator:
             prompt_input_ids = torch.stack(padded_ids).long()
             prompt_attention_mask = torch.stack(padded_mask).long()
 
-            # Pass latent_positions to generate for proper embedding injection
-            # Recompute from actual padded prompt (robust to any padding scheme)
-            latent_pos = None
-            latent_token_id = getattr(self.model, 'latent_token_id', None)
-            has_latent = batch.get("latent_positions") is not None
-            if latent_token_id is not None and has_latent:
-                new_latent_pos = []
-                for i in range(batch_size):
-                    ids = prompt_input_ids[i].tolist()
-                    positions = [j for j, tid in enumerate(ids) if tid == latent_token_id]
-                    if positions:
-                        new_latent_pos.append(
-                            torch.tensor(positions[:self.model.num_latent_tokens], device=self.device)
-                        )
-                if new_latent_pos and len(new_latent_pos) == batch_size:
-                    latent_pos = torch.stack(new_latent_pos)
+            # Generate (V2: no latent_positions needed)
             generated_ids = self.model.generate(
                 input_ids=prompt_input_ids,
                 attention_mask=prompt_attention_mask,
-                latent_positions=latent_pos,
                 max_new_tokens=self.max_new_tokens,
             )
 

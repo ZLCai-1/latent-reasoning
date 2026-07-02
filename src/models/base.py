@@ -4,6 +4,9 @@ Model Wrapper for Latent Reasoning.
 Provides a unified interface over HuggingFace AutoModelForCausalLM,
 supporting GPT-2, Qwen2.5, and Llama-3.2 with hidden-state extraction
 and special boundary tokens.
+
+V2: Each latent token has a unique token ID (<LATENT_0>, <LATENT_1>, ...),
+    enabling standard input_ids generation without inputs_embeds hacks.
 """
 
 from __future__ import annotations
@@ -20,21 +23,29 @@ logger = logging.getLogger(__name__)
 # Special tokens used as span boundary markers
 SPAN_START_TOKEN = "<SPAN_START>"
 SPAN_END_TOKEN = "<SPAN_END>"
-LATENT_TOKEN = "<LATENT>"
-SPECIAL_TOKENS = [SPAN_START_TOKEN, SPAN_END_TOKEN, LATENT_TOKEN]
+
+
+def get_latent_token_names(num_latent_tokens: int) -> List[str]:
+    """Generate unique latent token names: <LATENT_0>, <LATENT_1>, ..."""
+    return [f"<LATENT_{k}>" for k in range(num_latent_tokens)]
+
+
+def get_special_tokens(num_latent_tokens: int) -> List[str]:
+    """All special tokens: span markers + K independent latent tokens."""
+    return [SPAN_START_TOKEN, SPAN_END_TOKEN] + get_latent_token_names(num_latent_tokens)
 
 
 class LatentReasoningModel(nn.Module):
     """Unified wrapper around HuggingFace causal-LM models.
 
-    Handles tokenizer expansion, hidden-state extraction, and generation
-    in a backend-agnostic way (GPT-2 / Qwen2.5 / Llama-3.2).
+    V2: Uses K independent token IDs for latent tokens, enabling standard
+    input_ids-based generation. No more inputs_embeds path needed for generate.
 
     Args:
         model_name: HuggingFace model identifier or local path.
         layer_ids: List of layer indices for hidden-state alignment.
                    Negative values are counted from the last layer.
-        num_latent_tokens: Number of latent reasoning tokens.
+        num_latent_tokens: Number of latent reasoning tokens (K).
         device: Target device (``"cuda"`` / ``"cpu"``).
         torch_dtype: Data type for model weights.
     """
@@ -71,15 +82,14 @@ class LatentReasoningModel(nn.Module):
             trust_remote_code=True,
         )
 
-        # --- Add special tokens ---
+        # --- Add special tokens (K independent latent tokens) ---
         self._add_special_tokens()
 
-        # --- Learnable latent token embeddings ---
+        # --- Learnable latent token embeddings (separate module for training) ---
         self._init_latent_embeddings()
 
         # Move model to device
         self.model.to(device)
-        # Move latent embeddings to device (they are a separate nn.Module)
         self.latent_embeddings.to(device)
         logger.info(
             "Model loaded: %s | params=%.1fM | device=%s | num_latent_tokens=%d",
@@ -94,10 +104,10 @@ class LatentReasoningModel(nn.Module):
     # ------------------------------------------------------------------
 
     def _add_special_tokens(self) -> None:
-        """Add ``<SPAN_START>``, ``<SPAN_END>``, and ``<LATENT>`` to the
-        tokenizer and resize model embeddings accordingly."""
+        """Add span markers + K independent latent tokens to tokenizer."""
+        special_tokens = get_special_tokens(self.num_latent_tokens)
         num_added = self.tokenizer.add_special_tokens(
-            {"additional_special_tokens": SPECIAL_TOKENS}
+            {"additional_special_tokens": special_tokens}
         )
         if num_added > 0:
             self.model.resize_token_embeddings(len(self.tokenizer))
@@ -114,26 +124,45 @@ class LatentReasoningModel(nn.Module):
         self.span_end_token_id: int = self.tokenizer.convert_tokens_to_ids(
             SPAN_END_TOKEN
         )
-        self.latent_token_id: int = self.tokenizer.convert_tokens_to_ids(
-            LATENT_TOKEN
-        )
+        # K independent latent token IDs
+        latent_names = get_latent_token_names(self.num_latent_tokens)
+        self.latent_token_ids: List[int] = [
+            self.tokenizer.convert_tokens_to_ids(name) for name in latent_names
+        ]
+        # Keep a single latent_token_id for backward compat (first one)
+        self.latent_token_id: int = self.latent_token_ids[0] if self.latent_token_ids else -1
 
     def _init_latent_embeddings(self) -> None:
         """Initialize learnable latent token embeddings.
 
-        Creates an ``nn.Embedding`` with *num_latent_tokens* entries,
-        each of dimension *hidden_dim* (matching the model’s hidden size).
-        Initialization uses N(0, 0.02) matching typical transformer init.
+        Kept as a separate nn.Embedding module so it can be trained
+        independently when the base model embedding table is frozen (LoRA).
+        Before generation, these are synced to the model's embedding table.
         """
         hidden_dim = self.model.config.hidden_size
-        self.latent_embeddings = nn.Embedding(self.num_latent_tokens, hidden_dim)
-        # Initialize with small normal values
+        self.latent_embeddings = nn.Embedding(
+            max(self.num_latent_tokens, 1), hidden_dim
+        )
         nn.init.normal_(self.latent_embeddings.weight, mean=0.0, std=0.02)
         logger.info(
             "Latent embeddings initialised: num_tokens=%d, dim=%d",
             self.num_latent_tokens,
             hidden_dim,
         )
+
+    def sync_latent_to_embedding_table(self) -> None:
+        """Copy learned latent embeddings into the model's embedding table.
+
+        Call this before generate() so that standard input_ids path
+        picks up the correct learned embeddings for <LATENT_k> tokens.
+        """
+        if self.num_latent_tokens == 0:
+            return
+        embed_layer = self.model.get_input_embeddings()
+        with torch.no_grad():
+            for k in range(self.num_latent_tokens):
+                tid = self.latent_token_ids[k]
+                embed_layer.weight.data[tid] = self.latent_embeddings.weight.data[k]
 
     # ------------------------------------------------------------------
     # Core interfaces
@@ -148,16 +177,7 @@ class LatentReasoningModel(nn.Module):
         inputs_embeds: Optional[torch.Tensor] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
-        """Run a forward pass and return logits + (optionally) hidden states.
-
-        When *inputs_embeds* is provided, it takes precedence over
-        *input_ids* (used for student forward with latent injection).
-
-        Returns:
-            Dictionary with keys ``"logits"``, ``"loss"`` (if *labels*
-            provided), and ``"hidden_states"`` (tuple of layer tensors,
-            each ``[B, L, D]``).
-        """
+        """Run a forward pass and return logits + (optionally) hidden states."""
         if inputs_embeds is not None:
             outputs = self.model(
                 inputs_embeds=inputs_embeds,
@@ -176,13 +196,10 @@ class LatentReasoningModel(nn.Module):
             )
 
         result: Dict[str, Any] = {"logits": outputs.logits}
-
         if outputs.loss is not None:
             result["loss"] = outputs.loss
-
         if output_hidden_states and outputs.hidden_states is not None:
             result["hidden_states"] = outputs.hidden_states
-
         return result
 
     def forward_with_latent(
@@ -196,39 +213,29 @@ class LatentReasoningModel(nn.Module):
     ) -> Dict[str, Any]:
         """Student forward pass: inject learned latent embeddings.
 
-        Replaces the token embeddings at *latent_positions* with the
-        corresponding entries from ``self.latent_embeddings`` before
-        running the transformer forward pass.
+        Replaces token embeddings at latent positions with entries from
+        self.latent_embeddings. Used during TRAINING to ensure gradients
+        flow through the latent_embeddings module.
 
-        Args:
-            input_ids: Token ids ``[B, L]`` (with ``<LATENT>`` placeholders).
-            attention_mask: Mask ``[B, L]``.
-            labels: Optional labels ``[B, L]`` for generation loss.
-            latent_positions: ``[B, K]`` positions of latent tokens per
-                sample (K = num_latent_tokens).
-            output_hidden_states: Whether to return all hidden states.
-
-        Returns:
-            Same dictionary as :meth:`forward`.
+        For GENERATION, use sync_latent_to_embedding_table() + standard generate().
         """
-        # Step 1: Get token embeddings from the model's embedding layer
+        # Get token embeddings from the model's embedding layer
         inputs_embeds = self.model.get_input_embeddings()(input_ids).clone()
 
-        # Step 2: Inject learned latent embeddings at specified positions
-        if latent_positions is not None:
+        # Inject learned latent embeddings at specified positions
+        if latent_positions is not None and self.num_latent_tokens > 0:
             B, K = latent_positions.shape
             seq_len = inputs_embeds.size(1)
-            for k in range(K):
-                # Each latent position k gets the k-th learned embedding
+            for k in range(min(K, self.num_latent_tokens)):
                 latent_emb = self.latent_embeddings(
                     torch.tensor(k, device=input_ids.device)
                 )  # [D]
                 for b in range(B):
                     pos = latent_positions[b, k].item()
-                    if 0 < pos < seq_len:  # skip padding and out-of-bounds
+                    if 0 < pos < seq_len:
                         inputs_embeds[b, pos, :] = latent_emb
 
-        # Step 3: Forward with the modified embeddings
+        # Forward with modified embeddings
         return self.forward(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -243,39 +250,18 @@ class LatentReasoningModel(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
-        latent_positions: Optional[torch.Tensor] = None,
         max_new_tokens: int = 128,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Generate with latent embedding injection.
+        """Generate using standard input_ids path.
 
-        If *latent_positions* is provided (Stage 1 student mode),
-        injects learned latent embeddings before generation.
-        Otherwise falls back to standard generation.
+        Assumes sync_latent_to_embedding_table() has been called beforehand
+        so that <LATENT_k> token IDs map to the correct learned embeddings.
+        No inputs_embeds path needed.
         """
-        if latent_positions is not None and self.num_latent_tokens > 0:
-            # Inject learned latent embeddings at specified positions
-            inputs_embeds = self.model.get_input_embeddings()(input_ids).clone()
-            B, K = latent_positions.shape
-            seq_len = inputs_embeds.size(1)
-            for k in range(min(K, self.num_latent_tokens)):
-                latent_emb = self.latent_embeddings(
-                    torch.tensor(k, device=input_ids.device)
-                )
-                for b in range(B):
-                    pos = latent_positions[b, k].item()
-                    if 0 < pos < seq_len:  # skip padding and out-of-bounds
-                        inputs_embeds[b, pos, :] = latent_emb
-            return self.model.generate(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=self.tokenizer.pad_token_id,
-                eos_token_id=self.tokenizer.eos_token_id,
-                **kwargs,
-            )
+        # Sync latent embeddings to embedding table before generation
+        self.sync_latent_to_embedding_table()
 
-        # Standard generation (Stage 0 / no latent tokens)
         return self.model.generate(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -292,25 +278,14 @@ class LatentReasoningModel(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         layer_ids: Optional[List[int]] = None,
     ) -> Dict[int, torch.Tensor]:
-        """Extract hidden states at specified layers.
-
-        Args:
-            input_ids: Token ids, shape ``[B, L]``.
-            attention_mask: Optional mask, shape ``[B, L]``.
-            layer_ids: Layer indices to extract.  Defaults to
-                       ``self.layer_ids``.
-
-        Returns:
-            Mapping from *resolved* (positive) layer index to the
-            hidden-state tensor of shape ``[B, L, D]``.
-        """
+        """Extract hidden states at specified layers."""
         layer_ids = layer_ids or self.layer_ids
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             output_hidden_states=True,
         )
-        all_hidden = outputs.hidden_states  # tuple of (num_layers+1,) tensors
+        all_hidden = outputs.hidden_states
         num_layers = len(all_hidden)
 
         extracted: Dict[int, torch.Tensor] = {}
@@ -335,7 +310,7 @@ class LatentReasoningModel(nn.Module):
             input_ids=torch.tensor([[0]], device=self.device),
             output_hidden_states=True,
         )
-        return len(outputs.hidden_states) - 1  # exclude embedding layer
+        return len(outputs.hidden_states) - 1
 
     def save_pretrained(self, save_dir: str) -> None:
         """Persist model and tokenizer to *save_dir*."""

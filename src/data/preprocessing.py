@@ -267,18 +267,16 @@ def prepare_student_sample(
 
     The format is::
 
-        Question: <question>\nAnswer: <LATENT> <LATENT> ... <LATENT> <answer>
+        Question: <question>\nAnswer: <LATENT_0> <LATENT_1> ... <LATENT_{K-1}> <answer>
 
-    All CoT span content is removed and replaced by *num_latent_tokens*
-    ``<LATENT>`` placeholder tokens.  The model's ``forward_with_latent``
-    method will inject learned embeddings at these positions.
+    Each latent token has a unique token ID, enabling standard input_ids
+    generation without inputs_embeds substitution.
 
     Args:
         question: Problem text.
-        spans: Pre-computed spans (used only to determine original CoT
-               existed; content is discarded).
+        spans: Pre-computed spans (content is discarded).
         answer: Final answer string.
-        tokenizer: Tokenizer with ``<LATENT>`` special token added.
+        tokenizer: Tokenizer with ``<LATENT_k>`` special tokens added.
         num_latent_tokens: Number of latent tokens to insert (``K``).
         max_seq_length: Maximum token length.
 
@@ -286,15 +284,15 @@ def prepare_student_sample(
         Dictionary with:
           - ``input_ids``: Token ids ``[L]``.
           - ``attention_mask``: Mask ``[L]``.
-          - ``labels``: Labels ``[L]`` (question masked with -100,
-            latent positions masked with -100, only answer contributes).
+          - ``labels``: Labels ``[L]`` (question + latent masked with -100,
+            only answer contributes to loss).
           - ``latent_positions``: ``[K]`` int tensor with the positions
             of the latent tokens in the sequence.
           - ``answer_start``: Scalar int tensor marking where the answer
             begins (for generation loss).
     """
-    # Build student text: Question + latent placeholders + Answer
-    latent_str = " ".join(["<LATENT>"] * num_latent_tokens)
+    # Build student text: Question + K independent latent placeholders + Answer
+    latent_str = " ".join([f"<LATENT_{k}>" for k in range(num_latent_tokens)])
     full_text = f"Question: {question}\nAnswer: {latent_str} {answer}"
 
     encoding = tokenizer(
@@ -311,10 +309,18 @@ def prepare_student_sample(
     # Labels: copy of input_ids (causal LM objective)
     labels = input_ids.clone()
 
-    # Find latent token positions
-    latent_token_id = tokenizer.convert_tokens_to_ids("<LATENT>")
+    # Find latent token positions (each has a unique ID)
+    latent_token_ids = [
+        tokenizer.convert_tokens_to_ids(f"<LATENT_{k}>")
+        for k in range(num_latent_tokens)
+    ]
     ids_list = input_ids.tolist()
-    latent_positions = [i for i, tid in enumerate(ids_list) if tid == latent_token_id]
+    latent_positions = []
+    for tid in latent_token_ids:
+        for i, t in enumerate(ids_list):
+            if t == tid:
+                latent_positions.append(i)
+                break
 
     # Mask question portion (everything before "Answer:") with -100
     answer_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
@@ -333,7 +339,7 @@ def prepare_student_sample(
         answer_text_start = 0
 
     # CODI-style: mask EVERYTHING before the answer text
-    # (question + "Answer:" + <LATENT> tokens + spaces)
+    # (question + "Answer:" + <LATENT_k> tokens + spaces)
     # Only the final answer participates in generation_loss
     labels[:answer_text_start] = -100
 
