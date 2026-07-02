@@ -40,6 +40,8 @@ def transition_cosine(
     """
     # Align K dimension
     K_min = min(student_transitions.size(1), teacher_transitions.size(1))
+    if K_min == 0:
+        return {"mean": 0.0, "per_k": [], "per_layer": []}
     s = student_transitions[:, :K_min].float()
     t = teacher_transitions[:, :K_min].float()
 
@@ -95,6 +97,8 @@ def normalized_transition_error(
         Dictionary with ``mean``, ``per_k`` (list).
     """
     K_min = min(student_transitions.size(1), teacher_transitions.size(1))
+    if K_min == 0:
+        return {"mean": 0.0, "per_k": []}
     s = student_transitions[:, :K_min].float()
     t = teacher_transitions[:, :K_min].float()
 
