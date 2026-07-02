@@ -56,4 +56,4 @@ logging:
 checkpoint:
   save_dir: "checkpoints/stage0_cot"
   save_interval: 1
-  keep_top_k: 15
+  keep_top_k: 999

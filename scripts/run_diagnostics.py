@@ -28,6 +28,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
+import torch.nn as nn
 from functools import partial
 from omegaconf import OmegaConf
 from torch.utils.data import DataLoader
@@ -82,6 +83,15 @@ def parse_args():
                         help="Path to save results JSON")
     parser.add_argument("--no_chat_template", action="store_true",
                         help="Disable chat template for student evaluation (use raw text format matching training)")
+    # --- Latent token intervention args (Stage 0.3) ---
+    parser.add_argument("--zero_latent", action="store_true",
+                        help="Zero out latent embeddings before evaluation")
+    parser.add_argument("--random_latent", action="store_true",
+                        help="Replace latent embeddings with random values")
+    parser.add_argument("--shuffle_latent", action="store_true",
+                        help="Shuffle the order of latent embeddings")
+    parser.add_argument("--repeat_latent", action="store_true",
+                        help="Use first latent token for all positions")
     return parser.parse_args()
 
 
@@ -403,6 +413,23 @@ def main():
 
     # Load model
     model, cfg = load_model_and_config(args)
+
+    # --- Apply latent token interventions (Stage 0.3) ---
+    if args.zero_latent and model.num_latent_tokens > 0:
+        logger.info("[Intervention] Zeroing latent embeddings")
+        model.latent_embeddings.weight.data.zero_()
+    elif args.random_latent and model.num_latent_tokens > 0:
+        logger.info("[Intervention] Replacing latent embeddings with random values")
+        torch.manual_seed(12345)
+        nn.init.normal_(model.latent_embeddings.weight, mean=0.0, std=0.02)
+    elif args.shuffle_latent and model.num_latent_tokens > 0:
+        logger.info("[Intervention] Shuffling latent embedding order")
+        perm = torch.randperm(model.num_latent_tokens)
+        model.latent_embeddings.weight.data = model.latent_embeddings.weight.data[perm]
+    elif args.repeat_latent and model.num_latent_tokens > 0:
+        logger.info("[Intervention] Repeating first latent token for all positions")
+        first = model.latent_embeddings.weight.data[0:1].clone()
+        model.latent_embeddings.weight.data = first.expand(model.num_latent_tokens, -1).contiguous()
 
     # Run task metrics (§5.6.2 & §5.6.3)
     task_results = run_task_metrics(model, cfg, args)
