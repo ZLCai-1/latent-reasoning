@@ -47,7 +47,7 @@ curriculum:
   enabled: false
 
 evaluation:
-  eval_interval: 5
+  eval_interval: 1
   metrics: ["accuracy"]
 
 logging:
@@ -58,7 +58,7 @@ logging:
 
 checkpoint:
   save_dir: "checkpoints/gpt2/student"
-  save_interval: 5
+  save_interval: 1
   keep_top_k: 999
 
 teacher:
