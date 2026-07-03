@@ -1,16 +1,31 @@
 # =============================================================================
-# 基线：Direct Answer（不使用任何推理链）
+# 基线：Direct Answer（不使用任何推理链，纯 Q→A）
+# 训练数据格式：Question: ...\nAnswer: 18
 # =============================================================================
 
 defaults:
   - ../stage0_cot
 
+model:
+  num_latent_tokens: 0
+
 data:
   span_strategy: "none"
-  max_seq_length: 128  # 很短，强制直接回答
+  num_spans: 0
+  max_seq_length: 128
+  mode: "direct"  # 使用 prepare_direct_answer_sample，不含 CoT
 
 training:
-  num_epochs: 5
+  num_epochs: 10
+
+loss:
+  transition_weight: 0.0
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 1.0
+
+curriculum:
+  enabled: false
 
 logging:
   run_name: "baseline-direct-answer"

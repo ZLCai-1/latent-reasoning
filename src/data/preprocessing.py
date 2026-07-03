@@ -363,3 +363,64 @@ def _find_subseq(seq: List[int], subseq: List[int]) -> Optional[int]:
     return None
 
 
+def prepare_direct_answer_sample(
+    question: str,
+    answer: str,
+    tokenizer: Any,
+    max_seq_length: int = 128,
+) -> Dict[str, torch.Tensor]:
+    """Construct a Direct Answer training sample: Q -> A without any CoT.
+
+    The format is::
+
+        Question: <question>\nAnswer: <answer>
+
+    No CoT, no latent tokens, no span markers. Used as a lower-bound baseline
+    to verify that latent tokens provide value beyond just LoRA fine-tuning.
+
+    Args:
+        question: Problem text.
+        answer: Final answer string (numeric, e.g. "18").
+        tokenizer: Tokenizer instance.
+        max_seq_length: Maximum token length.
+
+    Returns:
+        Dictionary with ``input_ids``, ``attention_mask``, ``labels``.
+        Labels mask the question portion with -100.
+    """
+    full_text = f"Question: {question}\nAnswer: {answer}"
+
+    encoding = tokenizer(
+        full_text,
+        max_length=max_seq_length,
+        truncation=True,
+        padding=False,
+        return_tensors="pt",
+    )
+
+    input_ids = encoding["input_ids"].squeeze(0)  # [L]
+    attention_mask = encoding["attention_mask"].squeeze(0)  # [L]
+
+    # Append EOS so model learns to stop
+    if tokenizer.eos_token_id is not None:
+        eos_id = torch.tensor([tokenizer.eos_token_id])
+        input_ids = torch.cat([input_ids, eos_id])
+        attention_mask = torch.cat([attention_mask, torch.ones(1)])
+
+    # Labels: mask question, only answer contributes to loss
+    labels = input_ids.clone()
+    answer_token_ids = tokenizer.encode("Answer:", add_special_tokens=False)
+    ids_list = input_ids.tolist()
+    answer_start = _find_subseq(ids_list, answer_token_ids)
+    if answer_start is not None:
+        # Mask everything up to and including "Answer:"
+        labels[:answer_start + len(answer_token_ids)] = -100
+    else:
+        # Fallback: mask first half
+        labels[:len(ids_list) // 2] = -100
+
+    return {
+        "input_ids": input_ids,
+        "attention_mask": attention_mask,
+        "labels": labels,
+    }

@@ -169,10 +169,11 @@ class LatentReasoningDataset(Dataset):
         self.include_teacher_format = include_teacher_format
 
         # Lazy import to avoid circular dependency
-        from .preprocessing import prepare_training_sample, prepare_student_sample
+        from .preprocessing import prepare_training_sample, prepare_student_sample, prepare_direct_answer_sample
 
         self._prepare_fn = prepare_training_sample
         self._prepare_student_fn = prepare_student_sample
+        self._prepare_direct_fn = prepare_direct_answer_sample
 
         # Pre-tokenize if span_strategy is not "none"
         logger.info(
@@ -201,6 +202,23 @@ class LatentReasoningDataset(Dataset):
         # character-level splitting in prepare_training_sample
         if spans and isinstance(spans[0], str):
             spans = [[s] for s in spans]
+
+        if self.mode == "direct":
+            # Direct answer mode: Q -> A, no CoT, no latent tokens
+            sample = self._prepare_direct_fn(
+                question=record["question"],
+                answer=record["answer"],
+                tokenizer=self.tokenizer,
+                max_seq_length=self.max_seq_length,
+            )
+            result: Dict[str, torch.Tensor] = {
+                "input_ids": sample["input_ids"],
+                "attention_mask": sample["attention_mask"],
+                "labels": sample["labels"],
+            }
+            result["question"] = record["question"]
+            result["answer"] = record["answer"]
+            return result
 
         if self.mode == "student":
             # Student mode: replace CoT with latent token placeholders

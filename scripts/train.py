@@ -172,13 +172,22 @@ def main() -> None:
 
     curriculum_cfg = cfg.get("curriculum", {})
 
+    # Determine dataset mode: config override > auto-detect
+    config_mode = data_cfg.get("mode", None)
+    if config_mode:
+        dataset_mode = config_mode
+    elif num_latent_tokens > 0 and loss_cfg.get("transition_weight", 0) > 0:
+        dataset_mode = "student"
+    else:
+        dataset_mode = "teacher"
+
     dataset = LatentReasoningDataset(
         data=raw_data,
         tokenizer=model.tokenizer,
         max_seq_length=data_cfg.get("max_seq_length", 512),
         num_spans=data_cfg.get("num_spans", 3),
         span_strategy=data_cfg.get("span_strategy", "fixed"),
-        mode="student" if num_latent_tokens > 0 and loss_cfg.get("transition_weight", 0) > 0 else "teacher",
+        mode=dataset_mode,
         num_latent_tokens=num_latent_tokens,
         include_teacher_format=(
             loss_cfg.get("bridge_weight", 0) > 0

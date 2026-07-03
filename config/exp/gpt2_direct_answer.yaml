@@ -1,0 +1,61 @@
+# =============================================================================
+# GPT-2 Direct Answer Baseline (下界)
+# 对齐 CODI 论文超参，训练数据纯净 Q→A，不含 CoT
+# 对标 CODI 论文的 No-CoT-SFT (21.2%)
+# =============================================================================
+
+defaults:
+  - ../base
+
+model:
+  name: "models/gpt2-local"
+  num_latent_tokens: 0
+
+data:
+  dataset: "gsm8k"
+  data_path: "data/gsm8k_train.json"
+  num_spans: 0
+  span_strategy: "none"
+  max_seq_length: 128
+  mode: "direct"  # 纯 Q→A，不含 CoT
+
+training:
+  batch_size: 16
+  gradient_accumulation_steps: 8  # effective batch = 128
+  learning_rate: 3.0e-3
+  num_epochs: 40
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  fp16: true
+  gradient_checkpointing: false
+  use_lora: true
+
+lora:
+  r: 128
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]
+  dropout: 0.05
+
+loss:
+  transition_weight: 0.0
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 1.0
+
+curriculum:
+  enabled: false
+
+evaluation:
+  eval_interval: 5
+  metrics: ["accuracy"]
+
+logging:
+  use_wandb: false
+  project_name: "latent-reasoning"
+  run_name: "gpt2-direct-answer"
+  log_interval: 50
+
+checkpoint:
+  save_dir: "checkpoints/gpt2/direct_answer"
+  save_interval: 5
+  keep_top_k: 5
