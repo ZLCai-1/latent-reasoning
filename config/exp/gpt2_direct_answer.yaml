@@ -13,7 +13,7 @@ model:
 
 data:
   dataset: "gsm8k"
-  data_path: "data/gsm8k_train.json"
+  data_path: "data/gsm8k_aug_train.json"
   num_spans: 0
   span_strategy: "none"
   max_seq_length: 128
@@ -58,4 +58,4 @@ logging:
 checkpoint:
   save_dir: "checkpoints/gpt2/direct_answer"
   save_interval: 5
-  keep_top_k: 5
+  keep_top_k: 999

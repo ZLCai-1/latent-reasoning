@@ -12,7 +12,7 @@ model:
 
 data:
   dataset: "gsm8k"
-  data_path: "data/gsm8k_train.json"
+  data_path: "data/gsm8k_aug_train.json"
   num_spans: 0  # 不划分 span，使用完整 CoT
   span_strategy: "none"
   max_seq_length: 512

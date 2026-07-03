@@ -68,9 +68,9 @@ def parse_args():
     parser.add_argument("--checkpoint", type=str, required=True)
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--split", type=str, default="test")
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--max_samples", type=int, default=0, help="0 = all, set small (e.g. 10) for quick sanity check")
-    parser.add_argument("--max_new_tokens", type=int, default=128)
+    parser.add_argument("--max_new_tokens", type=int, default=512)
     parser.add_argument("--show_samples", type=int, default=5,
                         help="Number of qualitative samples to save in output")
     parser.add_argument("--cot_accuracy", type=float, default=0.0,

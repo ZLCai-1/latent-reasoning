@@ -13,7 +13,7 @@ model:
 
 data:
   dataset: "gsm8k"
-  data_path: "data/gsm8k_train.json"
+  data_path: "data/gsm8k_aug_train.json"
   num_spans: 3
   span_strategy: "fixed"
   max_seq_length: 512
