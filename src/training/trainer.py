@@ -16,7 +16,8 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.cuda.amp import GradScaler
+from torch.amp import autocast
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 from torch.utils.data import DataLoader
@@ -66,7 +67,19 @@ class Trainer:
         # Set up optimizer, scheduler, scaler
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler()
-        self.scaler = GradScaler(enabled=self.cfg["fp16"])
+        # bf16 不需要 GradScaler；fp16 需要
+        use_fp16 = self.cfg.get("fp16", False) and not self.cfg.get("bf16", False)
+        self.scaler = GradScaler(enabled=use_fp16)
+        # 确定 autocast dtype
+        if self.cfg.get("bf16", False):
+            self._amp_enabled = True
+            self._amp_dtype = torch.bfloat16
+        elif self.cfg.get("fp16", False):
+            self._amp_enabled = True
+            self._amp_dtype = torch.float16
+        else:
+            self._amp_enabled = False
+            self._amp_dtype = torch.float32
 
         # WandB
         self.wandb_run = None
@@ -87,6 +100,7 @@ class Trainer:
             "gradient_accumulation_steps": 4,
             "warmup_ratio": 0.1,
             "fp16": True,
+            "bf16": False,
             "seed": 42,
             # Loss weights
             "transition_weight": 0.7,
@@ -316,7 +330,7 @@ class Trainer:
         if boundary_positions is not None:
             boundary_positions = boundary_positions.to(self.device)
 
-        with autocast(enabled=self.cfg["fp16"]):
+        with autocast(device_type="cuda", enabled=self._amp_enabled, dtype=self._amp_dtype):
             if is_student_mode:
                 # --- Student forward pass ---
                 outputs = self.model.forward_with_latent(

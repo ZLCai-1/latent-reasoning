@@ -277,6 +277,7 @@ def main() -> None:
         "gradient_accumulation_steps": train_cfg.get("gradient_accumulation_steps", 4),
         "warmup_ratio": train_cfg.get("warmup_ratio", 0.1),
         "fp16": train_cfg.get("fp16", True),
+        "bf16": train_cfg.get("bf16", False),
         "seed": seed,
         # Loss weights
         "transition_weight": loss_cfg.get("transition_weight", 0.7),
