@@ -59,11 +59,14 @@ def transition_loss(
     elif K_t < K_s:
         student_transitions = student_transitions[:, :K_t]
 
+    # Ensure same dtype (avoid fp16/bf16 mismatch NaN)
+    teacher_transitions = teacher_transitions.to(student_transitions.dtype)
+
     if normalize:
         student_transitions = _std_normalize(student_transitions, eps)
         teacher_transitions = _std_normalize(teacher_transitions, eps)
 
-    return F.mse_loss(student_transitions, teacher_transitions)
+    return F.smooth_l1_loss(student_transitions, teacher_transitions)
 
 
 def anchor_loss(
@@ -96,6 +99,9 @@ def anchor_loss(
         student_states = student_states[:, :K_t]
 
     teacher_states = teacher_states.detach()
+
+    # Ensure same dtype
+    teacher_states = teacher_states.to(student_states.dtype)
 
     if normalize:
         student_states = _std_normalize(student_states, eps)
