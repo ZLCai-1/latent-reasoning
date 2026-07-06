@@ -1,12 +1,12 @@
 # =============================================================================
-# GPT-2 Direct Answer Baseline (下界)
-# 对齐 CODI 论文超参，训练数据纯净 Q→A，不含 CoT
+# GPT-2 Student: Latent Token + Transition Alignment
+# 对齐 CODI 论文 GPT-2 超参，num_latent_tokens=3
 # 完全自包含，无 defaults 继承
 # =============================================================================
 
 model:
   name: "models/gpt2-local"
-  num_latent_tokens: 0
+  num_latent_tokens: 3
   layer_ids: [-1, -2]
   special_tokens:
     span_start: "<SPAN_START>"
@@ -15,39 +15,41 @@ model:
 data:
   dataset: "gsm8k"
   data_path: "data/gsm8k_aug_train.json"
-  num_spans: 0
-  span_strategy: "none"
-  max_seq_length: 128
+  num_spans: 3
+  span_strategy: "fixed"
+  max_seq_length: 256
   max_samples: 0
   num_workers: 4
-  mode: "direct"
+  mode: "student"
 
 training:
   batch_size: 64
   gradient_accumulation_steps: 2    # effective batch = 128
-  learning_rate: 5.0e-4             # 降低 LR 避免稀疏监督爆炸
+  learning_rate: 3.0e-3             # CODI GPT-2 统一 3e-3
   num_epochs: 40
-  warmup_ratio: 0.03
-  weight_decay: 0.1
-  max_grad_norm: 2.0
+  warmup_ratio: 0.03                # CODI 3% warmup
+  weight_decay: 0.1                 # CODI 0.1
+  max_grad_norm: 2.0                # CODI 2.0
   fp16: false
-  bf16: true
-  seed: 11
+  bf16: true                        # CODI 用 bf16
+  seed: 11                          # CODI seed=11
   gradient_checkpointing: false
   use_lora: true
 
 lora:
-  r: 128
+  r: 128                            # CODI rank=128
   alpha: 32
   target_modules: ["c_attn", "c_proj"]
-  dropout: 0.0
+  dropout: 0.0                      # CODI prj_dropout=0.0
 
 loss:
-  transition_weight: 0.0
-  anchor_weight: 0.0
-  bridge_weight: 0.0
-  generation_weight: 1.0
-  normalize_transition: false
+  transition_weight: 0.5
+  anchor_weight: 0.1
+  bridge_weight: 0.1
+  generation_weight: 0.3
+  normalize_transition: true        # CODI distill_loss_div_std=True
+  bridge_rho: 1.0
+  bridge_xi: 0.5
 
 curriculum:
   enabled: false
@@ -60,11 +62,11 @@ evaluation:
 logging:
   use_wandb: false
   project_name: "latent-reasoning"
-  run_name: "gpt2-direct-answer"
-  log_interval: 10
+  run_name: "gpt2-student"
+  log_interval: 10                  # CODI logging_steps=10
 
 checkpoint:
-  save_dir: "checkpoints/gpt2/direct_answer"
+  save_dir: "checkpoints/gpt2/student"
   save_interval: 1
   keep_top_k: 999
   resume_from: null

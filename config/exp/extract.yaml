@@ -1,0 +1,27 @@
+# =============================================================================
+# Teacher States Extraction Config
+# 从 CoT SFT 模型提取 hidden states 用于 Stage 1 蒸馏
+# 完全自包含，无 defaults 继承
+# =============================================================================
+
+model:
+  name: "models/gpt2-local"
+  layer_ids: [-1, -2]
+  special_tokens:
+    span_start: "<SPAN_START>"
+    span_end: "<SPAN_END>"
+
+data:
+  dataset: "gsm8k"
+  data_path: "data/gsm8k_aug_train.json"
+  num_spans: 3
+  span_strategy: "fixed"
+  max_seq_length: 256
+  max_samples: 0
+  num_workers: 4
+
+teacher:
+  teacher_path: "checkpoints/gpt2/cot_sft/final"
+  output_dir: "data/teacher_states_gpt2"
+  batch_size: 32
+  store_fp16: true

@@ -95,14 +95,22 @@ def main() -> None:
     data_cfg = cfg.get("data", {})
     teacher_cfg = cfg.get("teacher", {})
 
-    # Teacher model name
-    teacher_name = args.teacher_path or teacher_cfg.get("model_name") or model_cfg.get("name", "gpt2")
+    # Teacher model path: CLI > config teacher.teacher_path > config model.name
+    teacher_name = args.teacher_path or teacher_cfg.get("teacher_path") or teacher_cfg.get("model_name") or model_cfg.get("name", "gpt2")
+    # Output dir: CLI > config teacher.output_dir
+    output_dir = args.output_dir
+    if output_dir == "teacher_states" and teacher_cfg.get("output_dir"):
+        output_dir = teacher_cfg.get("output_dir")
+    # Batch size: CLI > config teacher.batch_size
+    batch_size = args.batch_size
+    if batch_size == 8 and teacher_cfg.get("batch_size"):
+        batch_size = teacher_cfg.get("batch_size")
     layer_ids = list(model_cfg.get("layer_ids", [-1, -2]))
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     logger.info("Teacher model: %s", teacher_name)
     logger.info("Layer IDs: %s", layer_ids)
-    logger.info("Output dir: %s", args.output_dir)
+    logger.info("Output dir: %s", output_dir)
 
     # Load teacher model (with LoRA support)
     is_lora = os.path.exists(os.path.join(teacher_name, "adapter_config.json"))
@@ -154,13 +162,13 @@ def main() -> None:
         model_name=teacher_name,
         layer_ids=layer_ids,
         device=device,
-        cache_dir=args.output_dir,
+        cache_dir=output_dir,
         store_fp16=teacher_cfg.get("store_fp16", True),
     )
 
     cache_path = extractor.extract_and_cache(
         dataset=dataset,
-        batch_size=args.batch_size,
+        batch_size=batch_size,
         cache_filename="teacher_states.h5",
     )
 
