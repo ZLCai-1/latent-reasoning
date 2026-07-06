@@ -6,6 +6,7 @@
 
 model:
   name: "models/gpt2-local"
+  num_latent_tokens: 0             # Teacher 模型不用 latent tokens
   layer_ids: [-1, -2]
   special_tokens:
     span_start: "<SPAN_START>"
