@@ -494,12 +494,17 @@ class Trainer:
         # Prefer computing transitions from boundary_states (SPAN_END only)
         boundary_dict = self.teacher_states.get("boundary_states")
         if boundary_dict and len(boundary_dict) > 0:
-            layer_tensors = list(boundary_dict.values())
-            if layer_tensors:
-                # Stack: [N, K_all, num_layers, D]
-                boundary = torch.stack(layer_tensors, dim=2)
-                # Take only SPAN_END positions (odd indices)
-                boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
+            # Cache the stacked boundary_end to avoid repeated torch.stack
+            if not hasattr(self, '_cached_boundary_end'):
+                layer_tensors = list(boundary_dict.values())
+                if layer_tensors:
+                    boundary = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
+                    self._cached_boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
+                else:
+                    self._cached_boundary_end = None
+
+            boundary_end = self._cached_boundary_end
+            if boundary_end is not None:
 
                 # SLICE FIRST, then compute transitions (avoid full-tensor OOM)
                 from ..models.state_transition import StateTransitionModule
@@ -528,11 +533,17 @@ class Trainer:
         if transitions_dict is None or len(transitions_dict) == 0:
             return None
 
-        layer_tensors = list(transitions_dict.values())
-        if not layer_tensors:
-            return None
+        # Cache stacked transitions
+        if not hasattr(self, '_cached_transitions'):
+            layer_tensors = list(transitions_dict.values())
+            if layer_tensors:
+                self._cached_transitions = torch.stack(layer_tensors, dim=2)
+            else:
+                self._cached_transitions = None
 
-        transitions = torch.stack(layer_tensors, dim=2)
+        transitions = self._cached_transitions
+        if transitions is None:
+            return None
 
         # Use sample_idx for precise alignment
         if batch_indices is not None:
@@ -570,15 +581,18 @@ class Trainer:
 
         # boundary_dict is {layer_id: tensor[N, K_all, D]}
         # K_all = 2 * num_spans (SPAN_START and SPAN_END alternating)
-        layer_tensors = list(boundary_dict.values())
-        if not layer_tensors:
+        # Cache stacked boundary to avoid repeated torch.stack
+        if not hasattr(self, '_cached_boundary_for_bridge'):
+            layer_tensors = list(boundary_dict.values())
+            if layer_tensors:
+                stacked = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
+                self._cached_boundary_for_bridge = stacked[:, 1::2, :, :]  # [N, K, nL, D]
+            else:
+                self._cached_boundary_for_bridge = None
+
+        boundary = self._cached_boundary_for_bridge
+        if boundary is None:
             return None
-
-        # Stack to [N, K_all, num_layers, D]
-        boundary = torch.stack(layer_tensors, dim=2)
-
-        # Take only SPAN_END positions (odd indices: 1, 3, 5, ...)
-        boundary = boundary[:, 1::2, :, :]  # [N, K, num_layers, D]
 
         # Use sample_idx for precise alignment
         if batch_indices is not None:
