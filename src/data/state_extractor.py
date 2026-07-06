@@ -250,15 +250,15 @@ class TeacherStateExtractor:
                 if trans_key in f:
                     arr = f[trans_key][:]
                     result["transitions"][lid] = torch.from_numpy(
-                        arr.astype(np.float32)
-                    ).to(device)
+                        arr
+                    ).half().to(device)
 
                 states_key = f"boundary_states/layer_{lid}"
                 if states_key in f:
                     arr = f[states_key][:]
                     result["boundary_states"][lid] = torch.from_numpy(
-                        arr.astype(np.float32)
-                    ).to(device)
+                        arr
+                    ).half().to(device)
 
         logger.info(
             "Loaded cached states from %s (layers=%s)", cache_path, layer_ids
