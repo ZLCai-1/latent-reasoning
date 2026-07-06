@@ -154,11 +154,10 @@ def main() -> None:
         span_strategy=data_cfg.get("span_strategy", "fixed"),
     )
 
-    # Clean up temp model to free memory
-    del temp_model
-    torch.cuda.empty_cache()
+    # Freeze teacher model for extraction
+    temp_model.freeze()
 
-    # Create extractor and run
+    # Create extractor and inject the already-loaded model
     extractor = TeacherStateExtractor(
         model_name=teacher_name,
         layer_ids=layer_ids,
@@ -166,6 +165,9 @@ def main() -> None:
         cache_dir=output_dir,
         store_fp16=teacher_cfg.get("store_fp16", True),
     )
+    # Bypass lazy loading — use our LoRA-aware loaded model directly
+    extractor._model = temp_model
+    extractor._tokenizer = temp_model.tokenizer
 
     cache_path = extractor.extract_and_cache(
         dataset=dataset,
