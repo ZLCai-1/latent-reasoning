@@ -104,12 +104,28 @@ def main() -> None:
     logger.info("Layer IDs: %s", layer_ids)
     logger.info("Output dir: %s", args.output_dir)
 
-    # Load a temporary model just to get the tokenizer
-    temp_model = LatentReasoningModel(
-        model_name=teacher_name,
-        layer_ids=layer_ids,
-        device=device,
-    )
+    # Load teacher model (with LoRA support)
+    is_lora = os.path.exists(os.path.join(teacher_name, "adapter_config.json"))
+
+    if is_lora:
+        # LoRA checkpoint: load base model first, then attach adapter
+        base_model_name = model_cfg.get("name", "gpt2")
+        logger.info("Detected LoRA checkpoint, loading base model: %s", base_model_name)
+        temp_model = LatentReasoningModel(
+            model_name=base_model_name,
+            layer_ids=layer_ids,
+            device=device,
+        )
+        from peft import PeftModel
+        temp_model.model = PeftModel.from_pretrained(temp_model.model, teacher_name)
+        temp_model.model.eval()
+        logger.info("LoRA adapter loaded from %s", teacher_name)
+    else:
+        temp_model = LatentReasoningModel(
+            model_name=teacher_name,
+            layer_ids=layer_ids,
+            device=device,
+        )
 
     # Load dataset
     raw_data = load_gsm8k(
