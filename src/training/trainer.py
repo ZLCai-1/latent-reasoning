@@ -500,27 +500,28 @@ class Trainer:
                 boundary = torch.stack(layer_tensors, dim=2)
                 # Take only SPAN_END positions (odd indices)
                 boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
-                # Compute transitions between consecutive SPAN_END states
+
+                # SLICE FIRST, then compute transitions (avoid full-tensor OOM)
                 from ..models.state_transition import StateTransitionModule
-                transitions = StateTransitionModule.compute_transitions(
-                    boundary_end
-                )  # [N, K-1, nL, D]
-
-                # Use sample_idx for precise alignment
                 if batch_indices is not None:
-                    indices = [i for i in batch_indices if i < transitions.size(0)]
-                    if indices:
-                        return transitions[indices].to(self.device)
-                    return None
-
-                # Fallback: sequential (legacy)
-                start = self.global_step * batch_size
-                end = start + batch_size
-                if start >= transitions.size(0):
-                    start = start % transitions.size(0)
+                    indices = [i for i in batch_indices if i < boundary_end.size(0)]
+                    if not indices:
+                        return None
+                    batch_boundary = boundary_end[indices].to(self.device)
+                else:
+                    start = self.global_step * batch_size
                     end = start + batch_size
-                actual_end = min(end, transitions.size(0))
-                return transitions[start:actual_end].to(self.device)
+                    if start >= boundary_end.size(0):
+                        start = start % boundary_end.size(0)
+                        end = start + batch_size
+                    actual_end = min(end, boundary_end.size(0))
+                    batch_boundary = boundary_end[start:actual_end].to(self.device)
+
+                # Compute transitions only on the batch slice
+                transitions = StateTransitionModule.compute_transitions(
+                    batch_boundary
+                )  # [B, K-1, nL, D]
+                return transitions
 
         # Fallback: use raw cached transitions
         transitions_dict = self.teacher_states.get("transitions")
