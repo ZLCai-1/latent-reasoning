@@ -248,7 +248,7 @@ def main() -> None:
 
             # Use original (possibly negative) layer_ids to match HDF5 keys
             teacher_states = TeacherStateExtractor.load_cached_states(
-                cache_file, layer_ids, device="cpu"  # 保持在CPU，训练时按batch搬到GPU
+                cache_file, layer_ids, device=device  # fp16直接放 GPU
             )
             logger.info("Loaded teacher states from %s", cache_file)
         else:
