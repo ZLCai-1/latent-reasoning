@@ -51,3 +51,5 @@ latent_reasoning_research_proposal.md
 qwen2.5_teacher.json
 no_trans.json
 task_only.json
+smoke.log
+student_smoke_eval copy.json

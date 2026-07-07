@@ -6,7 +6,7 @@ Usage:
     # 自动找 best epoch 并导出
     python scripts/select_best_checkpoint.py \
         --ckpt_dir checkpoints/ablation/no_transition \
-        --base_model models/qwen2.5-math-1.5b
+        --base_model models/gpt2-local
 
     # 指定具体 epoch
     python scripts/select_best_checkpoint.py \
@@ -17,7 +17,7 @@ Usage:
     # 批量处理所有消融
     python scripts/select_best_checkpoint.py \
         --batch_root checkpoints/ablation \
-        --base_model models/qwen2.5-math-1.5b
+        --base_model models/gpt2-local
 """
 from __future__ import annotations
 
@@ -72,9 +72,9 @@ def find_best_epoch(ckpt_dir):
 
 
 def export_final(ckpt_dir, base_model, epoch, num_latent_tokens=3, layer_ids=(-1, -2),
-                 use_lora=True, lora_r=16, lora_alpha=32,
-                 lora_targets=("q_proj", "v_proj", "k_proj", "o_proj"),
-                 lora_dropout=0.05):
+                 use_lora=True, lora_r=128, lora_alpha=32,
+                 lora_targets=("c_attn", "c_proj"),
+                 lora_dropout=0.0):
     """加载指定 epoch 的 checkpoint，导出到 final/ 目录."""
     import torch
     from src.models.base import LatentReasoningModel
@@ -121,9 +121,13 @@ def parse_args():
     p.add_argument("--batch_root", type=str, help="Root containing multiple ablation dirs")
     p.add_argument("--epoch", type=int, default=None,
                    help="Specific epoch (default: auto-pick best val_loss)")
-    p.add_argument("--base_model", type=str, default="models/qwen2.5-math-1.5b")
+    p.add_argument("--base_model", type=str, default="models/gpt2-local")
     p.add_argument("--num_latent_tokens", type=int, default=3)
     p.add_argument("--layer_ids", type=int, nargs="+", default=[-1, -2])
+    p.add_argument("--lora_r", type=int, default=128)
+    p.add_argument("--lora_alpha", type=int, default=32)
+    p.add_argument("--lora_targets", type=str, nargs="+", default=["c_attn", "c_proj"])
+    p.add_argument("--lora_dropout", type=float, default=0.0)
     p.add_argument("--no_lora", action="store_true", help="Skip LoRA wrapping")
     return p.parse_args()
 
@@ -159,6 +163,10 @@ def main():
                 num_latent_tokens=args.num_latent_tokens,
                 layer_ids=args.layer_ids,
                 use_lora=not args.no_lora,
+                lora_r=args.lora_r,
+                lora_alpha=args.lora_alpha,
+                lora_targets=tuple(args.lora_targets),
+                lora_dropout=args.lora_dropout,
             )
             if ok:
                 success += 1
