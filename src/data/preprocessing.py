@@ -295,9 +295,12 @@ def prepare_student_sample(
     latent_str = " ".join([f"<LATENT_{k}>" for k in range(num_latent_tokens)])
     full_text = f"Question: {question}\nAnswer: {latent_str} {answer}"
 
+    # Reserve one slot for the EOS appended below so total length stays
+    # within max_seq_length.
+    tok_max_length = max_seq_length - 1 if tokenizer.eos_token_id is not None else max_seq_length
     encoding = tokenizer(
         full_text,
-        max_length=max_seq_length,
+        max_length=tok_max_length,
         truncation=True,
         padding=False,
         return_tensors="pt",
@@ -305,6 +308,16 @@ def prepare_student_sample(
 
     input_ids = encoding["input_ids"].squeeze(0)  # [L]
     attention_mask = encoding["attention_mask"].squeeze(0)  # [L]
+
+    # Append EOS so the student learns to STOP after the answer.
+    # Without EOS the model never terminates at inference -> degenerate
+    # repetition until max_new_tokens (avg_tokens saturates at the cap).
+    if tokenizer.eos_token_id is not None:
+        eos_id = torch.tensor([tokenizer.eos_token_id], dtype=input_ids.dtype)
+        input_ids = torch.cat([input_ids, eos_id])
+        attention_mask = torch.cat(
+            [attention_mask, torch.tensor([1], dtype=attention_mask.dtype)]
+        )
 
     # Labels: copy of input_ids (causal LM objective)
     labels = input_ids.clone()

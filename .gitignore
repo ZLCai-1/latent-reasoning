@@ -49,3 +49,5 @@ latent_reasoning_research_proposal.md
 0.2/
 0.3/
 qwen2.5_teacher.json
+no_trans.json
+task_only.json
