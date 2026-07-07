@@ -197,7 +197,12 @@ class LatentReasoningDataset(Dataset):
                 "Please run 'python scripts/preprocess_data.py' first to "
                 "generate pre-computed spans."
             )
-        spans = record.get("spans", record.get("steps", []))
+        spans = record.get("spans", [])
+        if not spans and self.num_spans > 0 and self.span_strategy != "none":
+            raise ValueError(
+                f"Record at index {idx} has empty 'spans' field. "
+                "Data must be preprocessed with preprocess_data.py."
+            )
         # Defense: wrap List[str] into List[List[str]] to prevent
         # character-level splitting in prepare_training_sample
         if spans and isinstance(spans[0], str):

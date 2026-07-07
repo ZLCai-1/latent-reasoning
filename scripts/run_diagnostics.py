@@ -125,14 +125,31 @@ def load_model_and_config(args):
         from peft import PeftModel
         model.model = PeftModel.from_pretrained(model.model, checkpoint_path)
         model.model.eval()
-        # Load latent embeddings
-        parent = os.path.dirname(checkpoint_path)
-        ckpt_files = sorted([f for f in os.listdir(parent) if f.startswith('checkpoint_epoch') and f.endswith('.pt')])
-        if ckpt_files:
-            ckpt_path = os.path.join(parent, ckpt_files[-1])
-            ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
-            if 'model_state_dict' in ckpt and 'latent_embeddings.weight' in ckpt['model_state_dict']:
-                model.latent_embeddings.weight.data = ckpt['model_state_dict']['latent_embeddings.weight']
+        # Load latent embeddings from final/latent_embeddings.pt (matches best checkpoint).
+        # Fail fast: NO fallback. A missing/mismatched latent embedding silently ruins eval.
+        if num_latent_tokens > 0:
+            latent_path = os.path.join(checkpoint_path, "latent_embeddings.pt")
+            if not os.path.exists(latent_path):
+                raise FileNotFoundError(
+                    f"latent_embeddings.pt not found at {latent_path}. "
+                    "Latent models must load latent embeddings from the checkpoint's final/ dir "
+                    "(exported by train.py). Refusing to evaluate with random latent embeddings."
+                )
+            state = torch.load(latent_path, map_location=device, weights_only=False)
+            if not isinstance(state, dict) or "weight" not in state:
+                raise ValueError(
+                    f"Invalid latent_embeddings.pt at {latent_path}: "
+                    f"expected a state_dict with 'weight' key, got {type(state)}."
+                )
+            loaded_weight = state["weight"]
+            if tuple(loaded_weight.shape) != tuple(model.latent_embeddings.weight.shape):
+                raise ValueError(
+                    f"latent_embeddings shape mismatch: checkpoint {tuple(loaded_weight.shape)} "
+                    f"vs model {tuple(model.latent_embeddings.weight.shape)}. "
+                    "Check model.num_latent_tokens matches the training config."
+                )
+            model.latent_embeddings.weight.data = loaded_weight.to(device)
+            logger.info("Loaded latent embeddings from %s", latent_path)
     else:
         model = LatentReasoningModel(
             model_name=checkpoint_path,

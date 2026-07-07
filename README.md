@@ -4,457 +4,346 @@
 
 ## 核心思想
 
-用少量 latent tokens 替代显式 Chain-of-Thought 推理链，通过对齐 Teacher 模型内部隐状态的转移量（ΔH）来训练 Student 模型。
+用少量 latent tokens 替代显式 Chain-of-Thought 推理链，通过对齐 Teacher 模型内部隐状态的**转移量（ΔH = h_{k+1} − h_k）**来训练 Student 模型在隐空间完成推理。
 
 > **注意**：latent token 的作用是节省**推理阶段（prefill）**的 token 占用，而非减少输出 token 长度。
+>
+> latent token 是否真正生效，由 `num_latent_tokens > 0` **且**对应的隐状态对齐 loss 权重 > 0 共同决定，不能仅凭 generation loss 下降判断。
+
+---
+
+## 当前实验状态
+
+| 实验 | 配置 | Accuracy | Avg Tokens | 状态 |
+|------|------|:--------:|:----------:|:----:|
+| **CoT SFT**（能力上界 / Teacher） | `gpt2_cot_sft.yaml` | 27.3% | 28.2 | ✅ 完成 |
+| **Direct Answer**（无推理下界） | `gpt2_direct_answer.yaml` | 12.4% | 3.4 | ✅ 完成 |
+| **Student（K=3, full method）** | `gpt2_student.yaml` | 训练中 | — | 🔄 |
+| 消融 · no_trans（去 transition） | +CLI 覆盖 | 待评估 | — | ✅ 训完 |
+| 消融 · task_only（纯 generation） | +CLI 覆盖 | 待评估 | — | ✅ 训完 |
+
+- **基础模型**：GPT-2（`models/gpt2-local`，124.4M params）+ LoRA
+- **训练数据**：GSM8k-Aug（`data/gsm8k_aug_train.json`，385K，纯表达式 CoT）
+- **评估数据**：标准 GSM8K test（`data/gsm8k_test.json`，1319 条）
+
+---
 
 ## 项目结构
 
 ```
 src/
-├── models/          # 模型封装 + 状态转移模块 + 损失函数
-├── data/            # 数据加载 + 预处理 + Teacher状态提取
-├── training/        # 训练循环 + 课程学习
-└── eval/            # 评估器（evaluator.py） + 诊断指标（diagnostics.py）
+├── models/          # 模型封装(base) + 状态转移模块(state_transition) + 损失函数(loss_functions)
+├── data/            # 数据加载(dataset) + 预处理(preprocessing) + Teacher状态提取(state_extractor)
+├── training/        # 训练循环(trainer) + 课程学习(curriculum，已禁用)
+└── eval/            # 评估器(evaluator) + 诊断指标(diagnostics) + 指标计算(metrics)
 
 scripts/
 ├── download_gsm8k.py          # 下载 GSM8K 数据集
-├── preprocess_data.py         # 数据预处理（生成 spans）
-├── train.py                   # 训练入口
-├── extract_teacher_states.py  # 提取 Teacher 隐状态
-├── evaluate.py                # 快速评估（accuracy + 效率）
-├── run_diagnostics.py         # 完整诊断（§5.6 全部指标 + 定性样本）
-├── verify_pipeline.py         # 评估管线最小验证
-├── run_ablation.sh            # 一键跑消融实验
-└── run_baselines.py           # 对比基线
+├── preprocess_data.py         # 数据预处理（生成 spans 字段）
+├── train.py                   # 训练入口（CoT SFT / Direct Answer / Student 通用）
+├── extract_teacher_states.py  # 提取 Teacher 隐状态到 HDF5
+├── run_diagnostics.py         # 完整诊断评估（accuracy + §5.6 指标 + 定性样本）
+├── evaluate.py                # 快速评估（不支持 --no_chat_template）
+└── select_best_checkpoint.py  # 中断后手动导出最优 final
 
-config/
-├── base.yaml                  # 默认配置
-└── exp/
-    ├── stage0_cot.yaml        # Stage 0: CoT Teacher 训练
-    ├── stage1_transition.yaml # Stage 1: Transition Alignment
-    ├── ablation/              # 14 个消融实验配置
-    └── baselines/             # 3 个对比基线配置
+config/exp/                    # 全部自包含，无 defaults 继承
+├── gpt2_cot_sft.yaml          # Stage 0: CoT SFT Teacher（num_latent=0）
+├── gpt2_direct_answer.yaml    # 下界 baseline（mode=direct）
+├── gpt2_student.yaml          # Stage 1: Student latent 训练（K=3）
+├── extract.yaml               # Teacher states 提取
+├── ablation/                  # 消融配置（旧，已被 CLI 覆盖方式取代，见下文）
+└── baselines/                 # 对比基线配置
 ```
+
+> **配置约定**：所有 YAML 完全自包含，不使用 `defaults` 继承；`curriculum.enabled: false` 全局禁用课程学习。
+
+---
 
 ## 环境安装
 
 ```bash
-git clone https://github.com/ZLCai-1/latent-reasoning.git
-cd latent-reasoning
 conda create -n latent_reasoning python=3.10 -y
 conda activate latent_reasoning
 pip install -r requirements.txt
 ```
 
-> 服务器访问 HuggingFace 受限时需设置镜像：`export HF_ENDPOINT=https://hf-mirror.com`
+> 服务器访问 HuggingFace 受限时设置镜像：`export HF_ENDPOINT=https://hf-mirror.com`
 
 ---
 
-## 完整流程
+## 完整流程（4 阶段）
 
-### 1. 下载 GSM8K 数据
+### 1. 数据准备
+
+训练用 GSM8k-Aug（385K，已在 `data/gsm8k_aug_train.json`），测试用标准 GSM8K test：
 
 ```bash
-python scripts/download_gsm8k.py --output data/gsm8k_train.json --split train
+# 若需重新下载 test
 python scripts/download_gsm8k.py --output data/gsm8k_test.json --split test
 ```
 
-**参数说明**：
-- `--output`：输出 JSON 文件路径
-- `--split`：`train` 或 `test`
-
----
-
-### 2. 数据预处理（生成 spans 字段）
+**预处理生成 spans 字段**（Student 训练与 Teacher 提取必需）：
 
 ```bash
-python scripts/preprocess_data.py --input data/gsm8k_train.json --output data/gsm8k_train.json --num_spans 3 --strategy fixed
-python scripts/preprocess_data.py --input data/gsm8k_test.json --output data/gsm8k_test.json --num_spans 3 --strategy fixed
+python scripts/preprocess_data.py \
+    --input data/gsm8k_aug_train.json \
+    --output data/gsm8k_aug_train.json \
+    --num_spans 3 --strategy fixed
 ```
 
-**参数说明**：
-- `--input`：输入文件路径
-- `--output`：输出文件路径（可与 input 相同，就地修改）
 - `--num_spans`：每条样本切分的 span 数 K（默认 3）
-- `--strategy`：切分策略，`fixed` / `random` / `none`
+- `--strategy`：`fixed`（均匀合并 steps）/ `random` / `none`
+
+> ⚠️ 数据已强制校验：`num_spans>0` 且 `strategy!=none` 时若缺 `spans` 字段会直接报错，不再静默 fallback。
 
 ---
 
-### 3. 准备 Teacher 模型
-
-**方案 A（推荐）：Qwen2.5-Math-1.5B-Instruct（GSM8K accuracy ~83%）**
+### 2. Stage 0：CoT SFT Teacher 训练
 
 ```bash
-HF_ENDPOINT=https://hf-mirror.com python -c "
-from huggingface_hub import snapshot_download
-snapshot_download(repo_id='Qwen/Qwen2.5-Math-1.5B-Instruct', local_dir='models/qwen2.5-math-1.5b', local_dir_use_symlinks=False)
-"
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py --config config/exp/gpt2_cot_sft.yaml
 ```
 
-**方案 B：自训练 Stage 0 CoT Teacher（GPT-2 轻量验证）**
+- 纯 generation loss（`num_latent=0`），模型学会显式 CoT 表达式推理
+- 训练完成后自动导出最优 checkpoint 到 `checkpoints/gpt2/cot_sft/final`（LoRA adapter）
+
+**评估 Teacher**（获取上界 accuracy）：
 
 ```bash
-python scripts/train.py --config config/exp/stage0_cot.yaml
-```
-
-**参数说明**（通过 OmegaConf 命令行覆盖）：
-- `data.data_path=<path>` —— 训练数据路径
-- `data.max_samples=<int>` —— 限制样本数（0=全部，调试用）
-- `training.num_epochs=<int>` —— 训练轮数
-- `training.batch_size=<int>` —— 批大小
-- `model.name=<path>` —— 基础模型路径
-
----
-
-### 4. 评估 Teacher 模型（获取 CoT baseline）
-
-```bash
-python scripts/evaluate.py \
-    --config config/exp/stage0_cot.yaml \
-    --checkpoint models/qwen2.5-math-1.5b \
-    --data_path data/gsm8k_test.json
-```
-
-**参数说明**：
-- `--config`：配置文件（必需）
-- `--checkpoint`：模型路径（**必需**）
-- `--data_path`：评估数据路径
-- `--split`：`test` / `train`（默认 `test`）
-- `--batch_size`：评估批大小（默认 32）
-- `--max_new_tokens`：最大生成 token 数（默认512）
-- `--max_samples`：评估样本上限（0=全量，调试用 10-20）
-- `--show_samples`：终端打印定性样本数（默认10）
-- `--cot_baseline_tokens`：CoT 输出 token 基线（默认200）
-- `--output`：结果 JSON 保存路径
-
-**记录输出中的 `Accuracy` 和 `Avg Output Tokens`**，后续诊断需要传入这两个数。
-
----
-
-### 5. 提取 Teacher 隐状态（HDF5 缓存）
-
-```bash
-python scripts/extract_teacher_states.py \
-    --config config/exp/stage1_transition.yaml \
-    --teacher_path models/qwen2.5-math-1.5b \
-    --output_dir data/teacher_states
-```
-
-**参数说明**：
-- `--config`：训练配置（提供 layer_ids 等）
-- `--teacher_path`：Teacher 模型路径
-- `--output_dir`：HDF5 输出目录
-- `--batch_size`：提取批大小（默认从 config 读取）
-
----
-
-### 6. Stage 1: Transition Alignment 训练
-
-```bash
-python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/qwen2.5-math-1.5b \
-    data.data_path=data/gsm8k_train.json
-```
-
-**参数说明**（OmegaConf 命令行覆盖）：
-- `model.name=<path>` —— 基础模型
-- `model.num_latent_tokens=<int>` —— latent token 数 K（默认 3）
-- `data.data_path=<path>` —— 训练数据
-- `data.max_samples=<int>` —— 限制样本数（轻量调试用）
-- `training.num_epochs=<int>` —— 训练轮数（默认 10，curriculum 推荐 15）
-- `training.batch_size=<int>` —— 批大小（3090 推荐 2）
-- `training.learning_rate=<float>` —— 学习率（默认 5e-5）
-- `training.gradient_checkpointing=true` —— 启用梯度检查点省显存
-- `training.use_lora=true` —— 启用 LoRA 微调
-- `loss.transition_weight=<float>` —— 状态转移 loss 权重
-- `loss.generation_weight=<float>` —— 生成 loss 权重
-- `loss.anchor_weight=<float>` —— 锚点 loss 权重
-- `loss.bridge_weight=<float>` —— 桥接 loss 权重
-- `curriculum.enabled=true` —— 启用课程学习
-- `checkpoint.save_dir=<path>` —— checkpoint 保存目录
-- `checkpoint.keep_top_k=<int>` —— 保留最近 K 个 checkpoint（默认 3）
-
-**轻量验证**（确认链路正常，2-3 分钟）：
-
-```bash
-python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/qwen2.5-math-1.5b \
-    data.data_path=data/gsm8k_train.json \
-    data.max_samples=200 \
-    training.num_epochs=3 \
-    training.batch_size=2 \
-    logging.use_wandb=false
-```
-
-**训练监控**：通过 `tail -f checkpoints/stage1_transition/train.log` 查看分项 loss 趋势。判断 latent token 训练生效的标准：
-- `transition` loss < 1.0
-- `anchor` loss < 0.5
-- `bridge` loss < 1.0
-- `generation` loss < 0.5
-- `transition` 和 `generation` **同步下降**
-
----
-
-### 7. 完整诊断评估
-
-```bash
-python scripts/run_diagnostics.py \
-    --checkpoint checkpoints/stage1_transition/final \
-    --config config/exp/stage1_transition.yaml \
+CUDA_VISIBLE_DEVICES=0 python scripts/run_diagnostics.py \
+    --config config/exp/gpt2_cot_sft.yaml \
+    --checkpoint checkpoints/gpt2/cot_sft/final \
     --data_path data/gsm8k_test.json \
     --no_chat_template \
-    --cot_accuracy 0.83 \
-    --cot_avg_tokens 300 \
-    --output results/diagnostics.json
+    --output results/cot_sft_eval.json
 ```
 
-**参数说明**：
-- `--config`：训练配置（必需）
-- `--checkpoint`：student 模型路径，可以是 `final/` 目录或 `.pt` 文件
-- `--data_path`：评估数据
-- `--split`：`test` / `train`（默认 `test`）
-- `--batch_size`：评估批大小（默认 4）
-- `--max_samples`：评估样本上限（0=全量，sanity check 用 10）
-- `--max_new_tokens`：最大生成 token 数（默认 128）
-- `--show_samples`：保存的定性样本数（默认 5）
-- `--cot_accuracy`：Step 4 测得的 Teacher accuracy（用于计算 Retention）
-- `--cot_avg_tokens`：Step 4 测得的 Teacher 平均输出 token 数（用于压缩比）
-- `--direct_accuracy`：Direct Answer baseline accuracy（可选，计算 Relative Gain）
-- `--no_chat_template`：**Student 评估必加**，禁用 chat template 以匹配训练时的 raw text 格式
-- `--output`：结果 JSON 保存路径
+---
 
-**轻量 sanity check**：
+### 3. 提取 Teacher States（HDF5 缓存）
 
 ```bash
-python scripts/run_diagnostics.py \
-    --checkpoint checkpoints/stage1_transition/final \
-    --config config/exp/stage1_transition.yaml \
+CUDA_VISIBLE_DEVICES=0 python scripts/extract_teacher_states.py \
+    --config config/exp/extract.yaml
+```
+
+- `extract.yaml` 自带 `teacher.teacher_path`、`output_dir`、`batch_size`，无需 CLI 传参
+- 从 CoT SFT `final`（LoRA adapter）加载 teacher，在 span boundary 位置抓 `layer_ids=[-1,-2]` 的 hidden states
+- 输出 `data/teacher_states_gpt2/teacher_states.h5`
+
+> `num_latent_tokens: 0` 必须与 teacher 训练一致，否则 vocab size mismatch（50259 vs 50262）加载失败。
+
+---
+
+### 4. Stage 1：Student Latent 训练
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
+    --config config/exp/gpt2_student.yaml \
+    training.batch_size=32 training.gradient_accumulation_steps=4
+```
+
+- 输入格式：`Question ... <LATENT_0><LATENT_1><LATENT_2> Answer: <answer>`
+- 4 个 loss 联合优化（transition + anchor + bridge + generation）
+- **必须用 `batch_size=32`**：bridge loss 的二次前向占显存，默认 64 会 OOM（effective batch 仍=128）
+
+**训练监控**（判断 latent token 是否生效）：
+
+```bash
+tail -f checkpoints/gpt2/student/train.log
+```
+
+| 分项 loss | 达标线 | 含义 |
+|-----------|:------:|------|
+| `transition` | < 1.0 | ΔH 转移量对齐 |
+| `anchor` | < 0.5 | 绝对状态防漂移 |
+| `bridge` | < 1.0 | 缓解 exposure mismatch |
+| `generation` | < 0.5 | 答案生成质量 |
+
+> latent token 真正生效的标志是 **transition/anchor/bridge 三个隐状态 loss 协同下降**；generation loss 仅反映 label 层面质量，不单独代表 latent 推理能力。
+
+**评估 Student**：
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python scripts/run_diagnostics.py \
+    --config config/exp/gpt2_student.yaml \
+    --checkpoint checkpoints/gpt2/student/final \
     --data_path data/gsm8k_test.json \
     --no_chat_template \
-    --max_samples 10 \
-    --show_samples 10 \
-    --cot_accuracy 0.83 \
-    --cot_avg_tokens 300 \
-    --output results/sanity_check.json
+    --output results/student_k3_eval.json
 ```
 
 ---
 
-### 8. 中断训练后手动导出 final（可选）
-
-推荐使用脚本 `scripts/select_best_checkpoint.py`，自动扫描 train.log 找 val_loss 最低的 epoch 并导出：
+### 5. Direct Answer 下界（可选，独立跑）
 
 ```bash
-# 自动选最优 epoch
-python scripts/select_best_checkpoint.py \
-    --ckpt_dir checkpoints/stage1_transition_v3 \
-    --base_model models/qwen2.5-math-1.5b
-
-# 手动指定某个 epoch
-python scripts/select_best_checkpoint.py \
-    --ckpt_dir checkpoints/stage1_transition_v3 \
-    --base_model models/qwen2.5-math-1.5b \
-    --epoch 4
-
-# 批量处理所有消融实验
-python scripts/select_best_checkpoint.py \
-    --batch_root checkpoints/ablation \
-    --base_model models/qwen2.5-math-1.5b
+CUDA_VISIBLE_DEVICES=1 python scripts/train.py --config config/exp/gpt2_direct_answer.yaml
 ```
 
-**参数说明**：
-- `--ckpt_dir`：单个 checkpoint 目录
-- `--batch_root`：批量处理根目录（适用于消融实验）
-- `--epoch`：指定具体 epoch（默认自动选 val_loss 最低的）
-- `--base_model`：基础模型路径
-- `--num_latent_tokens`：latent token 数（默认 3）
-- `--layer_ids`：对齐层（默认 -1 -2）
-- `--no_lora`：跳过 LoRA 包装（如果模型未启用 LoRA）
-
-**重要提示**：使用该脚本需训练时设 `checkpoint.keep_top_k=999`，避免最佳 epoch 被自动删除：
-
-```bash
-python scripts/train.py --config config/exp/stage1_transition.yaml \
-    checkpoint.keep_top_k=999
-```
+- `mode=direct`，训练数据纯净 Q→A，不含任何 CoT
+- **LR=5e-4**（比 3e-3 低）：答案监督极稀疏（1-3 token），高 LR 会震荡爆炸
 
 ---
 
-## 训练数据格式
+## 关键超参（对齐 CODI 论文）
 
-```json
-{
-  "question": "Tom has 5 apples...",
-  "answer": "3",
-  "steps": ["Tom starts with 5.", "He gives away 2.", "5 - 2 = 3."],
-  "spans": [["Tom starts with 5.", "He gives away 2."], ["5 - 2 = 3."]]
-}
-```
+| 类别 | 参数 | 值 |
+|------|------|-----|
+| 模型 | 基础模型 | GPT-2 (`models/gpt2-local`) |
+| 模型 | num_latent_tokens (Student) | 3 |
+| 模型 | layer_ids | [-1, -2] |
+| LoRA | r / alpha | 128 / 32 |
+| LoRA | target_modules | `["c_attn", "c_proj"]`（GPT-2 层名） |
+| LoRA | dropout | 0.0 |
+| 训练 | 精度 | **bf16**（fp16 会 NaN，见下文） |
+| 训练 | learning_rate | 3e-3（CoT SFT / Student）、5e-4（Direct Answer） |
+| 训练 | effective batch | 128 |
+| 训练 | num_epochs | 40 |
+| 训练 | warmup_ratio / weight_decay / max_grad_norm | 0.03 / 0.1 / 2.0 |
+| 训练 | seed | 11 |
+| 数据 | num_spans / span_strategy | 3 / fixed |
 
 ---
 
 ## 4 个核心 Loss
 
-| Loss | 作用 | 推荐权重 |
-|------|------|---------|
-| `transition_loss` | 对齐状态转移量 ΔH | 0.3-0.7 |
-| `anchor_loss` | 防止 hidden state 漂移 | 0.05-0.2 |
-| `bridge_loss` | 缓解 exposure mismatch | 0.05-0.15 |
-| `generation_loss` | 答案生成交叉熵 | **0.2-0.4** |
+| Loss | 作用对象 | 计算 | 权重 |
+|------|---------|------|:----:|
+| `transition_loss` | latent boundary 的 ΔH | smooth_l1（除以 teacher std 归一化） | 0.5 |
+| `anchor_loss` | latent boundary 绝对状态 | smooth_l1 | 0.1 |
+| `bridge_loss` | student vs teacher-prefix rollout | 二次前向对比 | 0.1 |
+| `generation_loss` | answer token | cross entropy | 0.3 |
 
-> ⚠️ `generation_weight` 不要低于 0.2，否则模型无法学会输出答案格式。
+> - `transition_loss` 使用 **smooth_l1**（梯度有界），**不是 MSE**（会导致 NaN）。
+> - `normalize_transition: true` 对应 CODI `--distill_loss_div_std True`：ΔH 除以 batch std，均衡各层贡献。
+> - `bridge_weight` 必须 > 0，不得因显存移除——它是能力对齐的关键设计。
 
 ---
 
-## 诊断指标体系（§5.6）
+## 训练数据格式
 
-`run_diagnostics.py` 一次性输出所有论文指标：
+GSM8k-Aug（纯表达式 CoT，预处理后带 spans）：
 
-| 类别 | 指标 | 含义 |
-|------|------|------|
-| §5.6.2 性能 | Accuracy, Exact Match | 任务准确率 |
-| §5.6.2 性能 | Accuracy Retention | 相对 CoT teacher 保留率 |
-| §5.6.3 效率 | Avg Tokens, Token Reduction | 输出 token 数 / 压缩率 |
-| §5.6.3 效率 | Compression Ratio | teacher_CoT_tokens / K |
-| §5.6.3 效率 | Latency, Throughput | 端到端速度 |
-| §5.6.4 对齐 | Transition Cosine | cos(ΔS, ΔT) 状态转移方向 |
-| §5.6.4 对齐 | Normalized Transition Error | ‖ΔS-ΔT‖/‖ΔT‖ |
-| §5.6.4 对齐 | Endpoint Drift | 边界状态绝对漂移 |
-| §5.6.4 对齐 | Layer-wise CKA | 层间表征相似度 |
-| §5.6.5 稳定性 | Collapse Rate | latent token 同质化检测 |
-| §5.6.5 稳定性 | Pairwise Diversity | 表征多样性 |
-| §5.6.5 稳定性 | Effective Rank | 表征有效秩 |
+```json
+{
+  "question": "Out of 600 employees, 30% got promoted...",
+  "answer": "360",
+  "steps": ["<<600*30/100=180>>", "<<600*10/100=60>>", "<<180+60=240>>", "<<600-240=360>>"],
+  "spans": [
+    ["<<600*30/100=180>>", "<<600*10/100=60>>"],
+    ["<<180+60=240>>"],
+    ["<<600-240=360>>"]
+  ]
+}
+```
+
+> `steps` 字段须原样保留含 `<<>>` 的表达式列表；`fixed` 策略把 steps 均匀合并到 K 个 span，不丢信息。
 
 ---
 
 ## 消融实验
 
-```bash
-# 默认：4 卡并行跑 12 个消融实验，每个 15 epoch + 自动评估
-bash scripts/run_ablation.sh
-```
-
-**环境变量**（所有参数可通过环境变量覆盖）：
-
-| 环境变量 | 默认值 | 含义 |
-|----------|--------|------|
-| `NUM_EPOCHS` | 15 | 训练轮数（快速验证可设 5）|
-| `GPU_COUNT` | 4 | 并行卡数 |
-| `BASE_MODEL` | `models/qwen2.5-math-1.5b` | 基础模型路径 |
-| `TRAIN_DATA` | `data/gsm8k_train.json` | 训练数据 |
-| `TEST_DATA` | `data/gsm8k_test.json` | 测试数据 |
-| `COT_ACC` | 0.83 | Teacher CoT accuracy（用于 retention）|
-| `COT_TOKENS` | 300 | Teacher 平均输出 token 数 |
-| `SKIP_EVAL` | 0 | 设为 1 则只训练不评估 |
-
-**常用示例**：
+> 旧的 `config/exp/ablation/*.yaml` 仍继承已删除的 `stage1_transition`，**已失效**。当前统一用 `gpt2_student.yaml` + CLI 覆盖 loss 权重和 save_dir。
 
 ```bash
-# 快速初筛（5 epoch，约 2.75 小时）
-NUM_EPOCHS=5 bash scripts/run_ablation.sh
+# 去掉 transition loss
+CUDA_VISIBLE_DEVICES=0 python scripts/train.py \
+    --config config/exp/gpt2_student.yaml \
+    training.batch_size=32 training.gradient_accumulation_steps=4 \
+    loss.transition_weight=0.0 loss.anchor_weight=0.1 loss.bridge_weight=0.1 loss.generation_weight=0.3 \
+    checkpoint.save_dir=checkpoints/gpt2/ablation_no_trans \
+    logging.run_name=ablation-no-transition
 
-# 完整论文实验（15 epoch，约 8.25 小时）
-bash scripts/run_ablation.sh
-
-# 2 卡环境
-GPU_COUNT=2 bash scripts/run_ablation.sh
-
-# 只训练不自动评估
-SKIP_EVAL=1 bash scripts/run_ablation.sh
+# 纯 generation（task only，latent token 无隐状态对齐监督）
+CUDA_VISIBLE_DEVICES=1 python scripts/train.py \
+    --config config/exp/gpt2_student.yaml \
+    training.batch_size=32 training.gradient_accumulation_steps=4 \
+    loss.transition_weight=0.0 loss.anchor_weight=0.0 loss.bridge_weight=0.0 loss.generation_weight=1.0 \
+    checkpoint.save_dir=checkpoints/gpt2/ablation_task_only \
+    logging.run_name=ablation-task-only
 ```
 
-**输出结构**：
-- 检查点：`checkpoints/ablation/<name>/final/`
-- 评估结果：`results/ablation/<name>.json`
-- 训练日志：`checkpoints/ablation/<name>.train.log`
-- 评估日志：`results/ablation/<name>.eval.log`
+评估消融模型（架构与 student 一致，直接用 `gpt2_student.yaml` 作 config）：
 
-**消融配置说明**（`config/exp/ablation/` 下 12 个）：
+```bash
+CUDA_VISIBLE_DEVICES=2 python scripts/run_diagnostics.py \
+    --config config/exp/gpt2_student.yaml \
+    --checkpoint checkpoints/gpt2/ablation_no_trans/final \
+    --data_path data/gsm8k_test.json \
+    --no_chat_template \
+    --output results/ablation/no_trans.json
+```
 
-| 配置 | 验证点 |
-|------|--------|
-| `no_transition.yaml` | 去掉 transition loss |
-| `no_anchor.yaml` | 去掉 anchor loss |
-| `no_bridge.yaml` | 去掉 bridge loss |
-| `transition_only.yaml` | 只保留 transition loss |
-| `full_loss.yaml` | 全部 4 个 loss |
-| `k1.yaml` / `k2.yaml` / `k5.yaml` | 不同 latent token 数 K |
-| `layer_last1.yaml` / `layer_last4.yaml` / `layer_all.yaml` | 不同 layer 选择 |
-| `dist_cosine.yaml` | cosine 距离函数 |
+> ⚠️ **不同配置的 val_loss 不可直接比较**：task_only 只有 generation 一项，no_trans 有 3 项，full 有 4 项，分量越多总 val_loss 越大。对比必须看评估出的 **accuracy**。
 
 ---
 
-## 对比基线
+## 诊断指标体系（§5.6）
 
-```bash
-python scripts/run_baselines.py \
-    --data_path data/gsm8k_train.json \
-    --test_data data/gsm8k_test.json \
-    --model_name models/qwen2.5-math-1.5b \
-    --skip_training
-```
+`run_diagnostics.py` 一次性输出：
 
-**参数说明**：
-- `--data_path`：训练数据（baseline 需要训练时用）
-- `--test_data`：测试数据
-- `--model_name`：基础模型路径
-- `--skip_training`：跳过训练，只评估已有 checkpoint
-- `--max_new_tokens`：最大生成 token 数（默认 128）
-- `--batch_size`：评估批大小（默认 8）
-- `--output`：结果 JSON 保存路径
+| 类别 | 指标 |
+|------|------|
+| 性能 | Accuracy、Accuracy Retention（相对 CoT teacher） |
+| 效率 | Avg Tokens、Token Reduction、Compression Ratio、Latency、Throughput |
+| 对齐 | Transition Cosine、Normalized Transition Error、Endpoint Drift、Layer-wise CKA |
+| 稳定性 | Collapse Rate、Pairwise Diversity、Effective Rank |
 
-> ⚠️ `run_baselines.py` 不支持 `--max_samples` 和 `--num_epochs` 参数。
+Stage 0（无 latent token）评估时会自动跳过 transition 相关指标。
 
 ---
 
-## 超参搜索（4 卡并行示例）
+## 显存优化与训练稳定性
+
+单卡 24GB（RTX 3090/4090）跑 Student 训练的关键实践：
+
+| 问题 | 根因 | 方案 |
+|------|------|------|
+| Teacher states OOM | 全量 385K×K×2层×768 ≈ 6.6GB，加上模型+bridge 二次前向放不下 | teacher states **CPU 存储 + fp16**，按 batch 索引切片后 `.to(device)`（每 step 仅搬 ~74KB） |
+| `torch.stack` 反复分配 | 每 step 对全量 tensor 做 stack | 首次调用缓存 `_cached_boundary_end` 等，后续复用 |
+| loss=NaN（fp16） | fp16 数值范围 ±65504，LR=3e-3 溢出 | 用 **bf16**（范围同 fp32） |
+| loss=NaN（loss 函数） | transition 用 MSE + fp16/bf16 混合 | 改 **smooth_l1** + teacher 张量 `.to(student.dtype)` 统一精度 |
+| Student batch 放不下 | bridge loss 二次前向使激活翻倍 | `batch_size=32, gradient_accumulation_steps=4`（effective 仍=128） |
+
+---
+
+## 中断恢复 / 手动导出 final
+
+训练时已设 `keep_top_k: 999` 保留全部 epoch checkpoint。中断后自动导出最优：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
-    training.learning_rate=1e-4 loss.transition_weight=0.5 \
-    checkpoint.save_dir=checkpoints/search/lr1e4_tw05 &
-
-CUDA_VISIBLE_DEVICES=1 python scripts/train.py --config config/exp/stage1_transition.yaml \
-    model.name=models/qwen2.5-math-1.5b data.data_path=data/gsm8k_train.json \
-    training.learning_rate=5e-5 loss.transition_weight=0.5 \
-    checkpoint.save_dir=checkpoints/search/lr5e5_tw05 &
-
-wait
+python scripts/select_best_checkpoint.py \
+    --ckpt_dir checkpoints/gpt2/student \
+    --base_model models/gpt2-local \
+    --num_latent_tokens 3 \
+    --layer_ids -1 -2
 ```
+
+> `--num_latent_tokens` 必须与训练一致，否则 vocab size mismatch。
 
 ---
 
 ## 常见问题
 
 **Q1：Accuracy = 0% 怎么排查？**
+1. 评估是否加了 `--no_chat_template`（训练是 raw text `Question:...\nAnswer:...`，不加会走 chat template 导致格式不匹配）
+2. 是否用了 `final/` 目录而非 `checkpoint_best.pt`（LoRA 评估必须用 final）
+3. 训练日志 `generation` loss 是否降到合理水平
+4. `--show_samples 10` 看 predictions 是否合理
 
-按顺序检查：
-1. 评估时是否加了 `--no_chat_template`（Qwen 系列必加）
-2. 训练日志中 `generation` loss 是否降到 0.5 以下
-3. `latent_embeddings.pt` 是否在 `final/` 目录里
-4. 用 `--show_samples 10` 看 predictions 是否合理
+**Q2：loss 突然变 NaN？**
+确认用的是 `bf16: true` 而非 `fp16`。GPT-2 + LR=3e-3 在 fp16 下会数值溢出。
 
-**Q2：训练 val_loss 早期开始上涨？**
+**Q3：CUDA OOM？**
+Student 训练用 `batch_size=32`；teacher states 保持 CPU 存储；确认没有其他进程（如 VS Code fileWatcher）占满 RAM。
 
-属于过拟合。`keep_top_k=3` 会自动保留最近 3 个 checkpoint，可以回退到 val_loss 最低的那个手动导出 final（见 Step 8）。
-
-**Q3：训练中断了怎么办？**
-
-用现有 `.pt` checkpoint 手动构造 `final/`（见 Step 8）。
+**Q4：evaluate.py 报 unrecognized arguments: --no_chat_template？**
+`evaluate.py` 不支持该参数，Student/CoT SFT 评估请用 `run_diagnostics.py`。
 
 ---
 
-## 硬件需求
+## 硬件需求与技术栈
 
-- 4× RTX 3090 24GB（单卡也可，调小 batch_size 即可）
-- CUDA 12.2+
-- Python 3.10+
-
-## 技术栈
-
-- PyTorch 2.0+
-- HuggingFace Transformers + PEFT (LoRA)
-- OmegaConf (配置管理)
-- WandB (可选，实验追踪)
+- **硬件**：RTX 3090/4090 24GB（单卡可跑；4 卡可并行跑不同实验/消融）
+- **技术栈**：PyTorch 2.0+、HuggingFace Transformers + PEFT (LoRA)、OmegaConf、h5py
