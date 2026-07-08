@@ -162,9 +162,11 @@ class Evaluator:
                     prompt_input_ids_list.append(input_ids[i, :end])
                     prompt_mask_list.append(attention_mask[i, :end])
 
-            # Determine padding side based on model type
-            model_type = getattr(self.model.model.config, 'model_type', 'gpt2')
-            pad_side = "right" if model_type == "gpt2" else "left"
+            # Decoder-only models MUST use left-padding for batched generation.
+            # Right-padding inserts pad tokens between the prompt and the newly
+            # generated tokens, which corrupts GPT-2's absolute position ids and
+            # degrades accuracy for the shorter prompts in a batch.
+            pad_side = "left"
 
             # Pad prompts to same length for batched generation
             max_prompt_len = max(p.size(0) for p in prompt_input_ids_list)
@@ -299,9 +301,8 @@ class Evaluator:
             "Answer:", add_special_tokens=False
         )
 
-        # Determine padding side
-        model_type = getattr(self.model.model.config, 'model_type', 'gpt2')
-        pad_side = "right" if model_type == "gpt2" else "left"
+        # Decoder-only models MUST use left-padding for batched generation.
+        pad_side = "left"
 
         for batch in self.dataloader:
             input_ids = batch["input_ids"].to(self.device)
