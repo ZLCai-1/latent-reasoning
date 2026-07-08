@@ -482,84 +482,48 @@ class Trainer:
     ) -> Optional[torch.Tensor]:
         """Retrieve teacher transitions for the current batch.
 
-        Uses sample_idx from batch for precise alignment when available,
-        otherwise falls back to sequential indexing.
+        Fail-fast alignment: REQUIRES sample_idx (batch_indices) and computes
+        transitions on-the-fly from boundary_states[:, 1::2] (SPAN_END only).
+        No sequential-indexing fallback and no stored-transitions fallback —
+        any misalignment must raise, never be silently papered over.
 
         Returns:
-            Tensor ``[B, K-1, num_layers, D]`` or ``None``.
+            ``[B, K-1, num_layers, D]``; ``None`` only when no teacher_states
+            are configured at all (teacher-less training).
         """
         if self.teacher_states is None:
             return None
 
-        # Prefer computing transitions from boundary_states (SPAN_END only)
+        if batch_indices is None:
+            raise ValueError(
+                "batch 缺少 sample_idx，无法与 teacher states 精确对齐；"
+                "student 数据集必须返回 sample_idx。"
+            )
+
         boundary_dict = self.teacher_states.get("boundary_states")
-        if boundary_dict and len(boundary_dict) > 0:
-            # Cache the stacked boundary_end to avoid repeated torch.stack
-            if not hasattr(self, '_cached_boundary_end'):
-                layer_tensors = list(boundary_dict.values())
-                if layer_tensors:
-                    boundary = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
-                    self._cached_boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
-                else:
-                    self._cached_boundary_end = None
+        if not boundary_dict:
+            raise ValueError(
+                "teacher_states 缺少 boundary_states，无法计算 transition；"
+                "请重新提取 teacher states。"
+            )
 
-            boundary_end = self._cached_boundary_end
-            if boundary_end is not None:
+        # Cache stacked SPAN_END boundary states to avoid repeated torch.stack
+        if not hasattr(self, '_cached_boundary_end'):
+            layer_tensors = list(boundary_dict.values())
+            boundary = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
+            self._cached_boundary_end = boundary[:, 1::2, :, :]  # [N, K, nL, D]
+        boundary_end = self._cached_boundary_end
 
-                # SLICE FIRST, then compute transitions (avoid full-tensor OOM)
-                from ..models.state_transition import StateTransitionModule
-                if batch_indices is not None:
-                    indices = [i for i in batch_indices if i < boundary_end.size(0)]
-                    if not indices:
-                        return None
-                    batch_boundary = boundary_end[indices].to(self.device)
-                else:
-                    start = self.global_step * batch_size
-                    end = start + batch_size
-                    if start >= boundary_end.size(0):
-                        start = start % boundary_end.size(0)
-                        end = start + batch_size
-                    actual_end = min(end, boundary_end.size(0))
-                    batch_boundary = boundary_end[start:actual_end].to(self.device)
+        oob = [i for i in batch_indices if i >= boundary_end.size(0)]
+        if oob:
+            raise IndexError(
+                f"sample_idx 越界 {oob[:5]}... >= teacher 样本数 {boundary_end.size(0)}；"
+                "teacher 提取与训练数据不一致，请重新提取 teacher states。"
+            )
 
-                # Compute transitions only on the batch slice
-                transitions = StateTransitionModule.compute_transitions(
-                    batch_boundary
-                )  # [B, K-1, nL, D]
-                return transitions
-
-        # Fallback: use raw cached transitions
-        transitions_dict = self.teacher_states.get("transitions")
-        if transitions_dict is None or len(transitions_dict) == 0:
-            return None
-
-        # Cache stacked transitions
-        if not hasattr(self, '_cached_transitions'):
-            layer_tensors = list(transitions_dict.values())
-            if layer_tensors:
-                self._cached_transitions = torch.stack(layer_tensors, dim=2)
-            else:
-                self._cached_transitions = None
-
-        transitions = self._cached_transitions
-        if transitions is None:
-            return None
-
-        # Use sample_idx for precise alignment
-        if batch_indices is not None:
-            indices = [i for i in batch_indices if i < transitions.size(0)]
-            if indices:
-                return transitions[indices].to(self.device)
-            return None
-
-        # Fallback: sequential (legacy)
-        start = self.global_step * batch_size
-        end = start + batch_size
-        if start >= transitions.size(0):
-            start = start % transitions.size(0)
-            end = start + batch_size
-        actual_end = min(end, transitions.size(0))
-        return transitions[start:actual_end].to(self.device)
+        from ..models.state_transition import StateTransitionModule
+        batch_boundary = boundary_end[batch_indices].to(self.device)  # [B, K, nL, D]
+        return StateTransitionModule.compute_transitions(batch_boundary)  # [B, K-1, nL, D]
 
     def _get_teacher_boundary_states_for_batch(
         self,
@@ -568,49 +532,37 @@ class Trainer:
     ) -> Optional[torch.Tensor]:
         """Retrieve teacher boundary states (SPAN_END only) for the batch.
 
+        Fail-fast alignment: REQUIRES sample_idx; no sequential fallback.
+
         Returns:
-            Tensor ``[B, K, num_layers, D]`` or ``None``.
-            K = num_spans (only SPAN_END positions are retained).
+            ``[B, K, num_layers, D]``; ``None`` only when no teacher_states /
+            boundary_states are configured. K = num_spans (SPAN_END only).
         """
         if self.teacher_states is None:
             return None
 
         boundary_dict = self.teacher_states.get("boundary_states")
-        if boundary_dict is None or len(boundary_dict) == 0:
+        if not boundary_dict:
             return None
 
-        # boundary_dict is {layer_id: tensor[N, K_all, D]}
-        # K_all = 2 * num_spans (SPAN_START and SPAN_END alternating)
-        # Cache stacked boundary to avoid repeated torch.stack
+        if batch_indices is None:
+            raise ValueError(
+                "batch 缺少 sample_idx，无法对齐 teacher boundary states。"
+            )
+
+        # boundary_dict is {layer_id: tensor[N, K_all, D]}, K_all = 2*num_spans
         if not hasattr(self, '_cached_boundary_for_bridge'):
             layer_tensors = list(boundary_dict.values())
-            if layer_tensors:
-                stacked = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
-                self._cached_boundary_for_bridge = stacked[:, 1::2, :, :]  # [N, K, nL, D]
-            else:
-                self._cached_boundary_for_bridge = None
-
+            stacked = torch.stack(layer_tensors, dim=2)  # [N, K_all, nL, D]
+            self._cached_boundary_for_bridge = stacked[:, 1::2, :, :]  # [N, K, nL, D]
         boundary = self._cached_boundary_for_bridge
-        if boundary is None:
-            return None
 
-        # Use sample_idx for precise alignment
-        if batch_indices is not None:
-            indices = [i for i in batch_indices if i < boundary.size(0)]
-            if indices:
-                return boundary[indices].to(self.device)
-            return None
-
-        # Fallback: sequential (legacy)
-        start = self.global_step * batch_size
-        end = start + batch_size
-
-        if start >= boundary.size(0):
-            start = start % boundary.size(0)
-            end = start + batch_size
-
-        actual_end = min(end, boundary.size(0))
-        return boundary[start:actual_end].to(self.device)
+        oob = [i for i in batch_indices if i >= boundary.size(0)]
+        if oob:
+            raise IndexError(
+                f"sample_idx 越界 {oob[:5]}... >= teacher 样本数 {boundary.size(0)}。"
+            )
+        return boundary[batch_indices].to(self.device)  # [B, K, nL, D]
 
     def _bridge_forward_teacher_prefix(
         self,

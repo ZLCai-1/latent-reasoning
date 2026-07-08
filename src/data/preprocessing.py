@@ -37,23 +37,27 @@ def split_into_spans(
         Nested list where each sub-list contains the steps belonging
         to that span.
     """
-    if not steps:
-        return [[]]
-
-    if num_spans <= 0 or num_spans >= len(steps):
-        # If K ≥ num_steps, each step is its own span
+    # CODI 式：始终产出恰好 num_spans 段，不依赖 step 数。
+    # 关键——保证下游生成 num_spans 个 SPAN_END 边界，避免 teacher 提取时
+    # boundary_positions 被 padding(0) 污染（steps<num_spans 时的历史 bug）。
+    if num_spans <= 0:
         return [[s] for s in steps] if steps else [[]]
 
-    if strategy == "fixed":
-        return _split_fixed(steps, num_spans)
-    elif strategy == "random":
+    if not steps:
+        # 无 steps 也要占满 num_spans 段（仍产生 num_spans 个边界 token）
+        return [[""] for _ in range(num_spans)]
+
+    if strategy == "random":
         return _split_random(steps, num_spans)
-    elif strategy == "semantic":
-        # Placeholder – fall back to fixed for now
+    if strategy == "semantic":
         logger.warning("Semantic splitting not yet implemented; using fixed.")
+
+    # fixed（默认）
+    if len(steps) >= num_spans:
+        # step 数充足：按 step 均分，边界落在自然的 step 边界上
         return _split_fixed(steps, num_spans)
-    else:
-        raise ValueError(f"Unknown span strategy: {strategy!r}")
+    # step 数不足 num_spans：在词级等距切分补齐到恰好 num_spans 段
+    return _split_by_words(steps, num_spans)
 
 
 def _split_fixed(steps: List[str], num_spans: int) -> List[List[str]]:
@@ -68,6 +72,36 @@ def _split_fixed(steps: List[str], num_spans: int) -> List[List[str]]:
         size = base_size + (1 if i < remainder else 0)
         group = steps[idx : idx + size]
         spans.append(group)
+        idx += size
+    return spans
+
+
+def _split_by_words(steps: List[str], num_spans: int) -> List[List[str]]:
+    """Word-level equidistant split to guarantee exactly *num_spans* spans.
+
+    Used when ``len(steps) < num_spans``: concatenate all steps and cut the
+    word sequence into *num_spans* near-equal chunks (CODI-style equidistant
+    anchors). This guarantees *num_spans* SPAN_END boundaries downstream so the
+    teacher extractor never pads boundary_positions with 0 (which previously
+    polluted ΔH with the position-0 hidden state).
+    """
+    words = " ".join(s.strip() for s in steps if s).split()
+    n = len(words)
+    if n == 0:
+        return [[""] for _ in range(num_spans)]
+    if n < num_spans:
+        # Fewer words than spans: one word per span, pad the rest with empty
+        # strings (still emits a real SPAN_END token at a distinct position).
+        spans = [[words[i]] for i in range(n)]
+        spans += [[""] for _ in range(num_spans - n)]
+        return spans
+    base = n // num_spans
+    rem = n % num_spans
+    spans: List[List[str]] = []
+    idx = 0
+    for i in range(num_spans):
+        size = base + (1 if i < rem else 0)
+        spans.append([" ".join(words[idx:idx + size])])
         idx += size
     return spans
 

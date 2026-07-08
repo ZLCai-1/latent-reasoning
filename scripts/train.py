@@ -251,6 +251,21 @@ def main() -> None:
                 cache_file, layer_ids, device="cpu"  # 必须 CPU：全量6.6GB放不进GPU，每 batch只搬74KB
             )
             logger.info("Loaded teacher states from %s", cache_file)
+            # 加固：校验 teacher 样本数 >= 数据集样本数，否则 sample_idx 越界/错位（静默 bug）
+            _bs = teacher_states.get("boundary_states", {})
+            if _bs:
+                _n_teacher = next(iter(_bs.values())).size(0)
+                if _n_teacher < len(dataset):
+                    raise ValueError(
+                        f"Teacher states 样本数 {_n_teacher} < 数据集 {len(dataset)}，"
+                        "sample_idx 会越界/错位。请确认 teacher 提取与训练使用同一份 raw_data "
+                        "（相同 data_path、无 max_samples 差异）并重新提取。"
+                    )
+                elif _n_teacher != len(dataset):
+                    logger.warning(
+                        "Teacher states 样本数 %d != 数据集 %d（前缀对齐仍可用，但请确认数据一致）",
+                        _n_teacher, len(dataset),
+                    )
         else:
             logger.warning(
                 "Teacher state cache not found at %s. "

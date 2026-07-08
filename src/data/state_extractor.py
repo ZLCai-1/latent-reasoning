@@ -123,7 +123,6 @@ class TeacherStateExtractor:
             drop_last=False,
         )
 
-        all_transitions: Dict[int, List[np.ndarray]] = {lid: [] for lid in self.layer_ids}
         all_boundary_states: Dict[int, List[np.ndarray]] = {lid: [] for lid in self.layer_ids}
 
         model = self.model
@@ -156,27 +155,18 @@ class TeacherStateExtractor:
                     hidden_states, boundary_positions, self.layer_ids
                 )  # [B, K, num_layers, D]
 
-                transitions = StateTransitionModule.compute_transitions(
-                    boundary_states
-                )  # [B, K-1, num_layers, D]
-
-                # Store per layer
+                # NOTE: 不再存储 transitions。训练时 trainer 只取 SPAN_END
+                # (boundary_states[:, 1::2]) 重新计算干净的跨段转移；在此存 6 点
+                # (SPAN_START+END) 混合差分是从未被使用且会误导的死数据。
                 for i, lid in enumerate(self.layer_ids):
                     states_layer = boundary_states[:, :, i, :]  # [B, K, D]
-                    trans_layer = transitions[:, :, i, :]  # [B, K-1, D]
-
                     states_np = states_layer.cpu().float().numpy()
-                    trans_np = trans_layer.cpu().float().numpy()
-
                     if self.store_fp16:
                         states_np = states_np.astype(np.float16)
-                        trans_np = trans_np.astype(np.float16)
-
                     all_boundary_states[lid].append(states_np)
-                    all_transitions[lid].append(trans_np)
 
         # Save to HDF5
-        self._save_hdf5(output_path, all_transitions, all_boundary_states)
+        self._save_hdf5(output_path, all_boundary_states)
         logger.info("Teacher states saved to %s", output_path)
         return output_path
 
@@ -194,22 +184,15 @@ class TeacherStateExtractor:
     def _save_hdf5(
         self,
         path: Path,
-        transitions: Dict[int, List[np.ndarray]],
         boundary_states: Dict[int, List[np.ndarray]],
     ) -> None:
-        """Save extracted states to an HDF5 file."""
+        """Save extracted boundary states to an HDF5 file."""
         with h5py.File(path, "w") as f:
-            for lid in transitions:
-                if transitions[lid]:
-                    trans_arr = np.concatenate(transitions[lid], axis=0)
-                    f.create_dataset(
-                        f"transitions/layer_{lid}",
-                        data=trans_arr,
-                        compression="gzip",
-                        compression_opts=4,
-                    )
+            n_samples = 0
+            for lid in boundary_states:
                 if boundary_states[lid]:
                     states_arr = np.concatenate(boundary_states[lid], axis=0)
+                    n_samples = int(states_arr.shape[0])
                     f.create_dataset(
                         f"boundary_states/layer_{lid}",
                         data=states_arr,
@@ -217,10 +200,11 @@ class TeacherStateExtractor:
                         compression_opts=4,
                     )
 
-            # Store metadata
+            # Store metadata (num_samples 供加载时校验 sample_idx 对齐)
             f.attrs["layer_ids"] = self.layer_ids
             f.attrs["model_name"] = self.model_name
             f.attrs["store_fp16"] = self.store_fp16
+            f.attrs["num_samples"] = n_samples
 
     @staticmethod
     def load_cached_states(
@@ -245,6 +229,15 @@ class TeacherStateExtractor:
         }
 
         with h5py.File(cache_path, "r") as f:
+            # 加固：校验 layer_ids 顺序与提取时完全一致，否则 student 会与 teacher
+            # 错层对齐（静默 bug，不报错但对错层）。
+            cached_layer_ids = [int(x) for x in f.attrs.get("layer_ids", [])]
+            if cached_layer_ids and list(layer_ids) != cached_layer_ids:
+                raise ValueError(
+                    f"layer_ids 不一致：请求 {list(layer_ids)} vs 缓存 {cached_layer_ids}。"
+                    "teacher_states 与当前 layer_ids 配置/顺序不匹配，会导致错层对齐；"
+                    "请用一致的 layer_ids 重新提取 teacher states。"
+                )
             for lid in layer_ids:
                 trans_key = f"transitions/layer_{lid}"
                 if trans_key in f:

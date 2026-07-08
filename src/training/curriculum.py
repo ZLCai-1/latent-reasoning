@@ -69,6 +69,19 @@ class CurriculumScheduler:
             else:
                 self.stages.append(CurriculumStage(**s))
 
+        # Fail-fast: 渐进改变 num_latent 当前未实现——model 的 num_latent_tokens
+        # 在初始化后固定，trainer 只注入 loss 权重、不改 num_latent。若各 stage
+        # 的 num_latent 不一致，curriculum 会静默失效，故直接报错。
+        if self.enabled and self.stages:
+            distinct_latents = {s.num_latent for s in self.stages}
+            if len(distinct_latents) > 1:
+                raise ValueError(
+                    f"Curriculum 各 stage 的 num_latent 不一致：{sorted(distinct_latents)}。"
+                    "渐进改变 latent 数量当前未实现（num_latent_tokens 初始化后固定，"
+                    "trainer 只注入 loss 权重、不改 num_latent）。请让所有 stage 使用相同的 "
+                    "num_latent，或关闭 curriculum。"
+                )
+
         # Pre-compute cumulative epoch boundaries
         self._epoch_boundaries: List[int] = []
         cumulative = 0
