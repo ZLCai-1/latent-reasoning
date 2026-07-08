@@ -122,7 +122,10 @@ def main() -> None:
         temp_model = LatentReasoningModel(
             model_name=base_model_name,
             layer_ids=layer_ids,
-            num_latent_tokens=model_cfg.get("num_latent_tokens", 0),
+            # Teacher CoT LoRA was trained with SPAN tokens only. Do not add
+            # student latent tokens here, or PEFT embedding weights mismatch
+            # (GPT2 50257 + 2 span tokens vs + 2 span + K latent tokens).
+            num_latent_tokens=0,
             device=device,
         )
         from peft import PeftModel
