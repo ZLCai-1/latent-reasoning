@@ -314,11 +314,12 @@ def main() -> None:
 
     # Resume if requested (CLI flag takes priority over config)
     resume_path = args.resume or cfg.get("checkpoint", {}).get("resume_from")
+    start_epoch = 0
     if resume_path:
-        trainer.load_checkpoint(resume_path)
+        start_epoch = trainer.load_checkpoint(resume_path)
 
     # ---- Train ----
-    trainer.train()
+    trainer.train(start_epoch=start_epoch)
 
     # ---- Save final model (from best val_loss checkpoint) ----
     final_dir = os.path.join(trainer_config["save_dir"], "final")

@@ -200,12 +200,12 @@ class Trainer:
     # Training loop
     # ------------------------------------------------------------------
 
-    def train(self) -> None:
+    def train(self, start_epoch: int = 0) -> None:
         """Run the full training loop."""
-        logger.info("Starting training for %d epochs", self.cfg["num_epochs"])
+        logger.info("Starting training for %d epochs (from epoch %d)", self.cfg["num_epochs"], start_epoch)
         torch.manual_seed(self.cfg["seed"])
 
-        for epoch in range(self.cfg["num_epochs"]):
+        for epoch in range(start_epoch, self.cfg["num_epochs"]):
             # Update loss weights from curriculum if available
             if self.curriculum_scheduler is not None:
                 stage = self.curriculum_scheduler.get_current_stage(epoch)

@@ -74,13 +74,13 @@ def find_best_epoch(ckpt_dir):
 def export_final(ckpt_dir, base_model, epoch, num_latent_tokens=3, layer_ids=(-1, -2),
                  use_lora=True, lora_r=128, lora_alpha=32,
                  lora_targets=("c_attn", "c_proj"),
-                 lora_dropout=0.0):
+                 lora_dropout=0.0, output_dir=None):
     """加载指定 epoch 的 checkpoint，导出到 final/ 目录."""
     import torch
     from src.models.base import LatentReasoningModel
 
     ckpt_file = os.path.join(ckpt_dir, f"checkpoint_epoch{epoch}.pt")
-    final_dir = os.path.join(ckpt_dir, "final")
+    final_dir = output_dir or os.path.join(ckpt_dir, "final")
 
     if not os.path.exists(ckpt_file):
         print(f"[ERROR] Checkpoint not found: {ckpt_file}")
@@ -128,6 +128,7 @@ def parse_args():
     p.add_argument("--lora_alpha", type=int, default=32)
     p.add_argument("--lora_targets", type=str, nargs="+", default=["c_attn", "c_proj"])
     p.add_argument("--lora_dropout", type=float, default=0.0)
+    p.add_argument("--output_dir", type=str, default=None, help="Custom output dir (default: ckpt_dir/final)")
     p.add_argument("--no_lora", action="store_true", help="Skip LoRA wrapping")
     return p.parse_args()
 
@@ -167,6 +168,7 @@ def main():
                 lora_alpha=args.lora_alpha,
                 lora_targets=tuple(args.lora_targets),
                 lora_dropout=args.lora_dropout,
+                output_dir=args.output_dir,
             )
             if ok:
                 success += 1
