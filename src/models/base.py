@@ -262,14 +262,27 @@ class LatentReasoningModel(nn.Module):
         # Sync latent embeddings to embedding table before generation
         self.sync_latent_to_embedding_table()
 
-        return self.model.generate(
+        # Suppress special tokens (latent + span markers) during generation.
+        # Their learned embeddings have very large norm; via GPT-2's tied
+        # lm_head this makes their output logits dominate, causing the model
+        # to endlessly emit <LATENT_k> instead of the answer. Forbid them.
+        forbidden_ids = [tid for tid in self.latent_token_ids if tid is not None and tid >= 0]
+        for tid in (self.span_start_token_id, self.span_end_token_id):
+            if tid is not None and tid >= 0:
+                forbidden_ids.append(tid)
+
+        gen_kwargs = dict(
             input_ids=input_ids,
             attention_mask=attention_mask,
             max_new_tokens=max_new_tokens,
             pad_token_id=self.tokenizer.pad_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
-            **kwargs,
         )
+        if forbidden_ids:
+            gen_kwargs["bad_words_ids"] = [[tid] for tid in forbidden_ids]
+        gen_kwargs.update(kwargs)
+
+        return self.model.generate(**gen_kwargs)
 
     @torch.no_grad()
     def get_hidden_states(
