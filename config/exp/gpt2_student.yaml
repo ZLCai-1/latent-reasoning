@@ -23,8 +23,8 @@ data:
   mode: "student"
 
 training:
-  batch_size: 64
-  gradient_accumulation_steps: 2    # effective batch = 128
+  batch_size: 32
+  gradient_accumulation_steps: 4    # effective batch = 128
   learning_rate: 3.0e-3             # CODI GPT-2 统一 3e-3
   num_epochs: 40
   warmup_ratio: 0.03                # CODI 3% warmup
