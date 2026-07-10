@@ -1,0 +1,79 @@
+# =============================================================================
+# GPT-2 Student v2 Ablation: Task Only
+# 对齐 gpt2_student.yaml，仅保留 latent token + answer generation loss
+# 完全自包含，无 defaults 继承
+# =============================================================================
+
+model:
+  name: "models/gpt2-local"
+  num_latent_tokens: 3
+  layer_ids: [-1, -2]
+  special_tokens:
+    span_start: "<SPAN_START>"
+    span_end: "<SPAN_END>"
+
+data:
+  dataset: "gsm8k"
+  data_path: "data/gsm8k_aug_train.json"
+  num_spans: 3
+  span_strategy: "fixed"
+  max_seq_length: 256
+  max_samples: 0
+  num_workers: 4
+  mode: "student"
+
+training:
+  batch_size: 32
+  gradient_accumulation_steps: 4    # effective batch = 128
+  learning_rate: 3.0e-3
+  num_epochs: 40
+  warmup_ratio: 0.03
+  weight_decay: 0.1
+  max_grad_norm: 2.0
+  fp16: false
+  bf16: true
+  seed: 11
+  gradient_checkpointing: false
+  use_lora: true
+
+lora:
+  r: 128
+  alpha: 32
+  target_modules: ["c_attn", "c_proj"]
+  dropout: 0.0
+
+loss:
+  transition_weight: 0.0
+  anchor_weight: 0.0
+  bridge_weight: 0.0
+  generation_weight: 1.0
+  normalize_transition: false
+  bridge_rho: 1.0
+  bridge_xi: 0.5
+
+curriculum:
+  enabled: false
+
+evaluation:
+  eval_interval: 1
+  metrics: ["accuracy"]
+  max_new_tokens: 128
+
+logging:
+  use_wandb: false
+  project_name: "latent-reasoning"
+  run_name: "gpt2-task-only-v2"
+  log_interval: 10
+
+checkpoint:
+  save_dir: "checkpoints/gpt2/ablation/task_only_v2"
+  save_interval: 1
+  keep_top_k: 999
+  resume_from: null
+
+teacher:
+  model_name: null
+  cache_dir: "data/teacher_states_gpt2"
+  cache_format: "hdf5"
+  extract_batch_size: 32
+  store_fp16: true
